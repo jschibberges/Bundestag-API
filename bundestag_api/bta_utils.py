@@ -7,7 +7,6 @@ gen_apikey = "GmEPb1B.bfqJLIhcGAsH9fTJevTglhFpCoZyAAAdhp"
 
 date_gen_apikey = "31.05.2023"
 date_expiry = datetime.strptime(date_gen_apikey, "%d.%m.%Y")
-today = datetime.now()
 
 base_url = "https://search.dip.bundestag.de/api/v1/"
 resourcetypes = ["aktivitaet", "drucksache", "drucksache-text", "person",
@@ -16,8 +15,8 @@ resourcetypes = ["aktivitaet", "drucksache", "drucksache-text", "person",
 institutions = ["BT", "BR", "BV", "EK"]
 
 
-def btapi_query(resource,
-                apikey,
+def btapi_query(apikey,
+                resource,
                 rformat="json",
                 num=100,
                 fid=None,
@@ -27,6 +26,45 @@ def btapi_query(resource,
                 documentID=None,
                 plenaryprotocolID=None,
                 processID=None):
+    """A general search function for the official Bundestag API
+
+    Parameters
+        ----------
+        apikey: str/BTA_Connection
+            Either an API key in string format or a BTA_Connection object
+        resource: str
+            The resource type to be queried. options are aktivitaet,
+            drucksache, drucksache-text, person, plenarprotokoll,
+            plenarprotokoll-text, vorgang or vorgangsposition
+        rformat: str, optional
+            Return format of the data. Defaults to json. XML not implemented
+            yet. Other option is "object" which will return results as class
+            objects
+        num: int, optional
+            Number of maximal results to be returned. Defaults to 100
+        fid: int/list, optional
+            ID of an entity. Can be a list to retrieve more than one entity
+        datestart: str, optional
+            Date after which entities should be retrieved. Format
+            is "YYYY-MM-DD"
+        dateend: str, optional
+            Date before which entities should be retrieved. Format
+            is "YYYY-MM-DD"
+        institution: str, optional
+            Filter results by institution BT, BR, BV or EK
+        documentID: int, optional
+            Entity ID of a document. Can be used to select activities,
+            procedures and procedure positions that are connected to the
+            document
+        plenaryprotocolID: int, optional
+            Entity ID of a plenary protocol. Can be used to select activities,
+            procedures and procedure positions that are connected to the
+            protocol
+        processID: int, optional
+            Entity ID of a process. Can be used to select procedure positions
+            that are connected to the process
+    """
+
     if hasattr(apikey, "apikey") is True:
         apikey = apikey.apikey
     elif isinstance(apikey, str) and len(apikey) == 42:
@@ -79,6 +117,8 @@ def btapi_query(resource,
     if rformat == "object":
         rformat = "json"
         return_object = True
+    if isinstance(fid, list) is True:
+        fid = '&f.id='.join(map(str, fid))
     payload = {"apikey": apikey,
                "format": rformat,
                "f.id": fid,
@@ -93,7 +133,7 @@ def btapi_query(resource,
     prs = True
     while prs is True:
         r = requests.get(r_url, params=payload)
-        print(r.url)
+        # print(r.url)
         if r.status_code == requests.codes.ok:
             content = r.json()
             if content["numFound"] == 0:
@@ -138,9 +178,10 @@ def btapi_query(resource,
 
 
 class BTA_Connection:
-    '''This class handles the API authentication'''
+    """This class handles the API authentication"""
 
     def __init__(self, apikey=None):
+        today = datetime.now()
         if apikey is None and date_expiry.date() < today.date():
             print("You need to supply your own API key.")
         elif apikey is None and date_expiry.date() > today.date():
@@ -153,14 +194,14 @@ class BTA_Connection:
                 self.apikey = apikey
 
     def __str__(self):
-        return str(self.apikey)
+        return "API key: "+str(self.apikey)
 
     def __repr__(self):
-        return str(self.apikey)
+        return "API key: "+str(self.apikey)
 
 
 class Person:
-    "This class represents a German parliamentarian"
+    """This class represents a German parliamentarian"""
 
     def __init__(self, dictionary):
         self.btid = dictionary["id"]
@@ -277,7 +318,7 @@ class Person:
 
 
 class Role:
-    "This class presents a role in the German parliamentary system."
+    """This class presents a role in the German parliamentary system."""
 
     def __init__(self, dictionary):
         self.function = dictionary["funktion"]
@@ -322,7 +363,7 @@ class Role:
         return f'Person: {self.firstname}{" " if self.nameaddendum!=None else ""}{self.nameaddendum if self.nameaddendum!=None else ""} {self.lastname} {"(" if self.faction!= None else ""}{self.faction if self.faction!= None else ""}{")" if self.faction!= None else ""} - {self.function}'
 
     def __repr__(self):
-        pass
+        return f'Person: {self.firstname}{" " if self.nameaddendum!=None else ""}{self.nameaddendum if self.nameaddendum!=None else ""} {self.lastname} {"(" if self.faction!= None else ""}{self.faction if self.faction!= None else ""}{")" if self.faction!= None else ""} - {self.function}'
 
     def returnrole(self):
         return(
@@ -331,7 +372,7 @@ class Role:
 
 
 class Drucksache:
-    "This class represents a document of the German federal parliaments"
+    """This class represents a document of the German federal parliaments"""
 
     def __init__(self, dictionary):
         self.btid = dictionary["id"]
@@ -392,9 +433,12 @@ class Drucksache:
             self.docnumber = None
         if "autoren_anzeige" in dictionary:
             auan = []
+            auanid = []
             for a in dictionary["autoren_anzeige"]:
-                auan.append(Person(a))
+                auan.append(a["titel"])
+                auanid.append(a["id"])
             self.author = auan
+            self.authorid = auanid
             self.authordisplay = dictionary["autoren_anzeige"]
         else:
             self.author = None
@@ -408,21 +452,45 @@ class Drucksache:
         return f'{self.instance}: ({self.btid}) {self.doctype} - {self.title} - {self.date}'
 
     def __repr__(self):
-        pass
+        return f'{self.instance}: ({self.btid}) {self.doctype} - {self.title} - {self.date}'
 
-    def get_authors(self):
+    def get_authors(self, apikey):
         pass
 
 
 class Aktivitaet:
-    "This class represents an activity in the German federal parliaments"
+    """This class represents an activity in the German federal parliaments"""
 
     def __init__(self, dictionary):
         self.btid = dictionary["id"]
+        self.activitytype = dictionary["aktivitaetsart"]
+        self.date = dictionary["datum"]
+        self.title = dictionary["titel"]
+        self.type = dictionary["typ"]
+        self.doctype = dictionary["dokumentart"]
+        self.parlsession = dictionary["wahlperiode"]
+        self.numprocedure = dictionary["vorgangsbezug_anzahl"]
+        self.procedure_reference = dictionary["vorgangsbezug"][0]["id"]
+        self.document_reference = dictionary["fundstelle"][0]["id"]
+
+    def __str__(self):
+        return f'{self.instance}: ({self.btid}) {self.activitytype} - {self.title} - {self.date}'
+
+    def get_procedure(self, apikey):
+        data = btapi_query(apikey=apikey, resource="vorgang",
+                           fid=self.procedure_reference)
+        data = Vorgang(data[0])
+        return data
+
+    def get_document(self, apikey):
+        data = btapi_query(
+            apikey=apikey, resource="drucksache-text", fid=self.document_reference)
+        data = Drucksache(data[0])
+        return data
 
 
 class Vorgang:
-    "This class represents a legislative process in of the German federal parliaments"
+    """This class represents a legislative process in of the German federal parliaments"""
 
     def __init__(self, dictionary):
         self.btid = dictionary["id"]
@@ -523,7 +591,7 @@ class Vorgang:
 
 
 class Vorgangsposition:
-    "This class represents a step in a legislative process in the German federal parliaments"
+    """This class represents a step in a legislative process in the German federal parliaments"""
 
     def __init__(self, dictionary):
         self.btid = dictionary["id"]
@@ -595,7 +663,7 @@ class Vorgangsposition:
 
 
 class Plenarprotokoll:
-    "This class represents a plenary protocol of the German federal parliaments"
+    """This class represents a plenary protocol of the German federal parliaments"""
 
     def __init__(self, dictionary):
         self.btid = dictionary["id"]

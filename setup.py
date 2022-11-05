@@ -16,7 +16,7 @@ setup(
     readme="README.md",
     license="MIT",
     name='bundestag_api',
-    version='0.0.4',
+    version='0.5.0',
     packages=find_packages(),
     install_requires=[
          'requests>=2.0.0',

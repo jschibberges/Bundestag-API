@@ -1,15 +1,21 @@
 # -*- coding: utf-8 -*-
-"""
-Created on Wed Oct 12 20:55:52 2022
 
-@author: jschi
-"""
+import bundestag_api
 
-import bundestag_api as bta
+bta = bundestag_api.btaConnection()
 
-con = bta.BTA_Connection()
-
-test = bta.btapi_query(apikey=con, resource="drucksache")
+test = bta.btapi_query(resource="drucksache")
 
 
-data = bta.get_document(btid=264035, apikey=con)
+data = bta.get_document(btid=264035)
+
+resourcetypes = ["aktivitaet", "drucksache", "drucksache-text", "person",
+                 "plenarprotokoll", "plenarprotokoll-text", "vorgang",
+                 "vorgangsposition"]
+bta = bundestag_api.BTA_Connection("GmEPb1B.bfqJLIhcGAsH9fTJevTglhFpCoZyAArrhp")
+data = bta.query(resource="vorgang")
+data2 = bta.query(resource="vorgang", rformat="object")
+dat2 = bta.query(resource="person", rformat="object")
+
+for r in resourcetypes:
+    dat2 = bta.query(resource=r, rformat="object")

@@ -8,11 +8,11 @@ class btaConnection:
 
     Methods
     -------
-    query(resource, rformat="json", num=100, fid=None, datestart=None, dateend=None, institution=None, documentID=None, plenaryprotocolID=None, processID=None)
+    query(resource, rformat="json", num=100, fid=None, datestart=None, dateend=None, institution=None, documentID=None, plenaryprotocolID=None, procedureID=None)
         A general search function for the official Bundestag API
     search_procedure(rformat="json",num=100,fid=None,datestart=None,dateend=None):
         Searches procedures specified by the parameters
-    search_procedureposition(rformat="json", num=100, fid=None, datestart=None, dateend=None, processID=None):
+    search_procedureposition(rformat="json", num=100, fid=None, datestart=None, dateend=None, procedureID=None):
         Searches procedure positions specified by the parameters
     search_document(rformat="json", num=100, fid=None, datestart=None, dateend=None,institution=None):
         Searches documents specified by the parameters
@@ -70,7 +70,7 @@ class btaConnection:
               institution=None,
               documentID=None,
               plenaryprotocolID=None,
-              processID=None):
+              procedureID=None):
         """A general search function for the official Bundestag API
 
         Parameters
@@ -103,7 +103,7 @@ class btaConnection:
                 Entity ID of a plenary protocol. Can be used to select activities,
                 procedures and procedure positions that are connected to the
                 protocol
-            processID: int, optional
+            procedureID: int, optional
                 Entity ID of a process. Can be used to select procedure positions
                 that are connected to the process
         """
@@ -119,11 +119,17 @@ class btaConnection:
             raise ValueError("No or wrong resource")
         if isinstance(fid, list):
             for i in fid:
-                if not isinstance(i, int):
-                    raise TypeError("IDs must be integers")
+                if not isinstance(fid, int):
+                    try:
+                        fid = int(fid)
+                    except ValueError as e:
+                        raise Exception("IDs must be integers: {}".format(e)) from None
         elif fid is not None:
             if not isinstance(fid, int):
-                raise TypeError("IDs must be integers")
+                try:
+                    fid = int(fid)
+                except ValueError as e:
+                    raise Exception("IDs must be integers: {}".format(e)) from None
         if rformat not in ["json", "xml", "object"]:
             raise ValueError("rformat: Not a correct format!")
         if institution is not None and institution not in INSTITUTIONS:
@@ -138,22 +144,22 @@ class btaConnection:
                 "plenaryprotocolID must be combined with resource 'aktivitaet', 'vorgang' or 'vorgangsposition'")
         elif resource in ["aktivitaet", "vorgang", "vorgangsposition"] and plenaryprotocolID is not None and not isinstance(plenaryprotocolID, int):
             raise ValueError("plenaryprotocolID must be an integer")
-        if resource not in ["vorgangsposition"] and processID is not None:
+        if resource not in ["vorgangsposition"] and procedureID is not None:
             raise ValueError(
-                "processID must be combined with resource 'vorgangsposition'")
-        elif resource in ["vorgangsposition"] and processID is not None and not isinstance(processID, int):
-            raise ValueError("processID must be an integer")
+                "procedureID must be combined with resource 'vorgangsposition'")
+        elif resource in ["vorgangsposition"] and procedureID is not None and not isinstance(procedureID, int):
+            raise ValueError("procedureID must be an integer")
         if plenaryprotocolID is not None and documentID is not None:
             raise ValueError(
-                "Can't select more than one of documentID, plenaryprotocolID and processID")
-        if plenaryprotocolID is not None and processID is not None:
+                "Can't select more than one of documentID, plenaryprotocolID and procedureID")
+        if plenaryprotocolID is not None and procedureID is not None:
             raise ValueError(
-                "Can't select more than one of documentID, plenaryprotocolID and processID")
-        if documentID is not None and processID is not None:
+                "Can't select more than one of documentID, plenaryprotocolID and procedureID")
+        if documentID is not None and procedureID is not None:
             raise ValueError(
-                "Can't select more than one of documentID, plenaryprotocolID and processID")
+                "Can't select more than one of documentID, plenaryprotocolID and procedureID")
         if not isinstance(num, int) or num <= 0:
-            raise ValueError("num mus be an integer larger than zero")
+            raise ValueError("num must be an integer larger than zero")
         r_url = BASE_URL+resource
         return_object = False
         if rformat == "object":
@@ -168,7 +174,7 @@ class btaConnection:
                    "f.datum.end": dateend,
                    "f.drucksache": documentID,
                    "f.plenarprotokoll": plenaryprotocolID,
-                   "f.vorgang": processID,
+                   "f.vorgang": procedureID,
                    "f.zuordnung": institution,
                    "cursor": None}
         data = []
@@ -218,6 +224,9 @@ class btaConnection:
                 data = {name["id"]: Vorgang(name) for name in data}
             elif resource == "vorgangsposition":
                 data = {name["id"]: Vorgangsposition(name) for name in data}
+        if len(data) == 1:
+            tl = list(data.keys())
+            data = data[tl[0]]
         return data
 
     def search_procedure(self,
@@ -261,13 +270,51 @@ class btaConnection:
                           num=num,)
         return data
 
+    def get_procedure(self,
+                      btid=None,
+                      rformat="json",
+                      documentID=None,
+                      plenaryprotocolID=None):
+        """
+        Retrieves procedures specified by IDs
+
+        Parameters
+        ----------
+        btid: int/list, optional
+            ID of a procedure entity. Can be a list to retrieve more than
+            one entity
+        rformat: str, optional
+            Return format of the data. Defaults to json. XML not implemented
+            yet. Other option is "object" which will return results as class
+            objects
+        documentID: int, optional
+            Returns procedure related to that documentID
+        plenaryprotocolID: int, optional
+            Entity ID of a plenary protocol. Can be used to select activities,
+            procedures and procedure positions that are connected to the
+            protocol
+
+        Returns
+        -------
+        data: list
+            a list of dictionaries or class objects of procedures
+        """
+        if btid is None and documentID is None and plenaryprotocolID is None:
+            raise ValueError("Either an procedure ID, document ID or plenary protocol ID must be supplied")
+        else:
+            data = self.query(resource="vorgang",
+                              fid=btid,
+                              rformat=rformat,
+                              documentID=documentID,
+                              plenaryprotocolID=plenaryprotocolID)
+            return data
+
     def search_procedureposition(self,
                                  rformat="json",
                                  num=100,
                                  fid=None,
                                  datestart=None,
-                                 dateend=None,
-                                 processID=None):
+                                 dateend=None):
         """
         Searches procedure positions specified by the parameters
 
@@ -288,9 +335,6 @@ class btaConnection:
         dateend: str, optional
             Date before which entities should be retrieved. Format
             is "YYYY-MM-DD"
-        processID: int, optional
-            Entity ID of a process. Can be used to select procedure positions
-            that are connected to the process
 
         Returns
         -------
@@ -303,9 +347,51 @@ class btaConnection:
                           fid=fid,
                           datestart=datestart,
                           dateend=dateend,
-                          processID=processID,
                           num=num,)
         return data
+
+    def get_procedureposition(self,
+                              btid,
+                              rformat="json",
+                              documentID=None,
+                              procedureID=None,
+                              plenaryprotocolID=None):
+        """
+        Retrieves procedure positions specified by IDs
+
+        Parameters
+        ----------
+        btid: int/list, optional
+            ID of a procedure position entity. Can be a list to retrieve more than
+            one entity
+        rformat: str, optional
+            Return format of the data. Defaults to json. XML not implemented
+            yet. Other option is "object" which will return results as class
+            objects
+        documentID: int, optional
+            Returns procedure positions related to that documentID
+        procedureID: int, optional
+            Returns procedure positions related to that procedure
+        plenaryprotocolID: int, optional
+            Entity ID of a plenary protocol. Can be used to select activities,
+            procedures and procedure positions that are connected to the
+            protocol
+
+        Returns
+        -------
+        data: list
+            a list of dictionaries or class objects of procedure positions
+        """
+        if btid is None and documentID is None and procedureID is None:
+            raise ValueError("Either an procedure ID, document ID or procedure ID must be supplied")
+        else:
+            data = self.query(resource="vorgangsposition",
+                              fid=btid,
+                              rformat=rformat,
+                              documentID=documentID,
+                              procedureID=procedureID,
+                              plenaryprotocolID=plenaryprotocolID)
+            return data
 
     def search_document(self,
                         rformat="json",
@@ -351,10 +437,36 @@ class btaConnection:
                           num=num,)
         return data
 
+    def get_document(self,
+                     btid,
+                     rformat="json"):
+        """
+        Retrieves documents specified by IDs
+
+        Parameters
+        ----------
+        btid: int/list
+            ID of a document entity. Can be a list to retrieve more than
+            one entity
+        rformat: str, optional
+            Return format of the data. Defaults to json. XML not implemented
+            yet. Other option is "object" which will return results as class
+            objects
+
+        Returns
+        -------
+        data: list
+            a list of dictionaries or class objects of documents
+        """
+
+        data = self.query(resource="drucksache-text",
+                          fid=btid,
+                          rformat=rformat)
+        return data
+
     def search_person(self,
                       rformat="json",
-                      num=100,
-                      fid=None):
+                      num=100):
         """
         Searches persons specified by the parameters
 
@@ -366,8 +478,6 @@ class btaConnection:
             objects
         num: int, optional
             Number of maximal results to be returned. Defaults to 100
-        fid: int/list, optional
-            ID of a person entity. Can be a list to retrieve more than one entity
 
         Returns
         -------
@@ -377,14 +487,39 @@ class btaConnection:
 
         data = self.query(resource="person",
                           rformat=rformat,
-                          fid=fid,
                           num=num,)
+        return data
+
+    def get_person(self,
+                   btid,
+                   rformat="json"):
+        """
+        Retrieves persons specified by IDs
+
+        Parameters
+        ----------
+        btid: int/list
+            ID of a person entity. Can be a list to retrieve more than
+            one entity
+        rformat: str, optional
+            Return format of the data. Defaults to json. XML not implemented
+            yet. Other option is "object" which will return results as class
+            objects
+
+        Returns
+        -------
+        data: list
+            a list of dictionaries or class objects of persons
+        """
+
+        data = self.query(resource="person",
+                          fid=btid,
+                          rformat=rformat)
         return data
 
     def search_plenaryprotocol(self,
                                rformat="json",
                                num=100,
-                               fid=None,
                                datestart=None,
                                dateend=None,
                                institution=None):
@@ -399,9 +534,6 @@ class btaConnection:
             objects
         num: int, optional
             Number of maximal results to be returned. Defaults to 100
-        fid: int/list, optional
-            ID of a plenary protocol entity. Can be a list to retrieve more
-            than one entity
         datestart: str, optional
             Date after which entities should be retrieved. Format
             is "YYYY-MM-DD"
@@ -417,9 +549,8 @@ class btaConnection:
             a list of dictionaries or class objects of plenary protocols
         """
 
-        data = self.query(resource="drucksache-text",
+        data = self.query(resource="plenarprotokoll-text",
                           rformat=rformat,
-                          fid=fid,
                           datestart=datestart,
                           dateend=dateend,
                           institution=institution,
@@ -427,187 +558,15 @@ class btaConnection:
 
         return data
 
-    def search_activity(self,
-                        rformat="json",
-                        num=100,
-                        fid=None,
-                        datestart=None,
-                        dateend=None,
-                        documentID=None,
-                        plenaryprotocolID=None,
-                        institution=None):
-        """
-        Searches activities specified by the parameters
-
-        Parameters
-        ----------
-        rformat: str, optional
-            Return format of the data. Defaults to json. XML not implemented
-            yet. Other option is "object" which will return results as class
-            objects
-        num: int, optional
-            Number of maximal results to be returned. Defaults to 100
-        fid: int/list, optional
-            ID of an activity entity. Can be a list to retrieve more than
-            one entity
-        datestart: str, optional
-            Date after which entities should be retrieved. Format
-            is "YYYY-MM-DD"
-        dateend: str, optional
-            Date before which entities should be retrieved. Format
-            is "YYYY-MM-DD"
-        documentID: int, optional
-            Entity ID of a document. Can be used to select activities,
-            procedures and procedure positions that are connected to the
-            document
-        plenaryprotocolID: int, optional
-            Entity ID of a plenary protocol. Can be used to select activities,
-            procedures and procedure positions that are connected to the
-            protocol
-        institution: str, optional
-            Filter results by institution BT, BR, BV or EK
-
-        Returns
-        -------
-        data: list
-            a list of dictionaries or class objects of activities
-        """
-
-        data = self.query(resource="drucksache-text",
-                          rformat=rformat,
-                          fid=fid,
-                          datestart=datestart,
-                          dateend=dateend,
-                          institution=institution,
-                          documentID=documentID,
-                          plenaryprotocolID=plenaryprotocolID,
-                          num=num)
-
-        return data
-
-    def get_activity(self, btid, rformat="json"):
-        """
-        Retrieves activities specified by IDs
-
-        Parameters
-        ----------
-        btid: int/list, optional
-            ID of an activity entity. Can be a list to retrieve more than
-            one entity
-        rformat: str, optional
-            Return format of the data. Defaults to json. XML not implemented
-            yet. Other option is "object" which will return results as class
-            objects
-
-        Returns
-        -------
-        data: list
-            a list of dictionaries or class objects of activities
-        """
-
-        data = self.query(resource="aktivitaet",
-                          fid=btid, rformat=rformat)
-        return data
-
-    def get_procedure(self, btid, rformat="json"):
-        """
-        Retrieves procedures specified by IDs
-
-        Parameters
-        ----------
-        btid: int/list, optional
-            ID of a procedure entity. Can be a list to retrieve more than
-            one entity
-        rformat: str, optional
-            Return format of the data. Defaults to json. XML not implemented
-            yet. Other option is "object" which will return results as class
-            objects
-
-        Returns
-        -------
-        data: list
-            a list of dictionaries or class objects of procedures
-        """
-
-        data = self.query(resource="vorgang", fid=btid)
-        return data
-
-    def get_procedureposition(self, btid, rformat="json"):
-        """
-        Retrieves procedure positions specified by IDs
-
-        Parameters
-        ----------
-        btid: int/list, optional
-            ID of a procedure position entity. Can be a list to retrieve more than
-            one entity
-        rformat: str, optional
-            Return format of the data. Defaults to json. XML not implemented
-            yet. Other option is "object" which will return results as class
-            objects
-
-        Returns
-        -------
-        data: list
-            a list of dictionaries or class objects of procedure positions
-        """
-
-        data = self.query(resource="vorgangsposition", fid=btid)
-        return data
-
-    def get_document(self, btid, rformat="json"):
-        """
-        Retrieves documents specified by IDs
-
-        Parameters
-        ----------
-        btid: int/list, optional
-            ID of a document entity. Can be a list to retrieve more than
-            one entity
-        rformat: str, optional
-            Return format of the data. Defaults to json. XML not implemented
-            yet. Other option is "object" which will return results as class
-            objects
-
-        Returns
-        -------
-        data: list
-            a list of dictionaries or class objects of documents
-        """
-
-        data = self.query(resource="drucksache-text", fid=btid)
-        return data
-
-    def get_person(self, btid, rformat="json"):
-        """
-        Retrieves persons specified by IDs
-
-        Parameters
-        ----------
-        btid: int/list, optional
-            ID of a person entity. Can be a list to retrieve more than
-            one entity
-        rformat: str, optional
-            Return format of the data. Defaults to json. XML not implemented
-            yet. Other option is "object" which will return results as class
-            objects
-
-        Returns
-        -------
-        data: list
-            a list of dictionaries or class objects of persons
-        """
-
-        data = self.query(resource="person", fid=btid, rformat=rformat)
-        return data
-
-    def get_plenaryprotocol(self, btid, rformat="json"):
+    def get_plenaryprotocol(self,
+                            btid,
+                            rformat="json"):
         """
         Retrieves plenary protocols specified by IDs
 
         Parameters
         ----------
-        btid: int/list, optional
+        btid: int/list
             ID of a plenary protocol entity. Can be a list to retrieve more than
             one entity
         rformat: str, optional
@@ -621,9 +580,94 @@ class btaConnection:
             a list of dictionaries or class objects of plenary protocols
         """
 
-        data = self.query(resource="plenarprotokoll-text", fid=btid,
+        data = self.query(resource="plenarprotokoll-text",
+                          fid=btid,
                           rformat=rformat)
         return data
+
+    def search_activity(self,
+                        rformat="json",
+                        num=100,
+                        datestart=None,
+                        dateend=None,
+                        institution=None):
+        """
+        Searches activities specified by the parameters
+
+        Parameters
+        ----------
+        rformat: str, optional
+            Return format of the data. Defaults to json. XML not implemented
+            yet. Other option is "object" which will return results as class
+            objects
+        num: int, optional
+            Number of maximal results to be returned. Defaults to 100
+        datestart: str, optional
+            Date after which entities should be retrieved. Format
+            is "YYYY-MM-DD"
+        dateend: str, optional
+            Date before which entities should be retrieved. Format
+            is "YYYY-MM-DD"
+        institution: str, optional
+            Filter results by institution BT, BR, BV or EK
+
+        Returns
+        -------
+        data: list
+            a list of dictionaries or class objects of activities
+        """
+
+        data = self.query(resource="aktivitaet",
+                          rformat=rformat,
+                          datestart=datestart,
+                          dateend=dateend,
+                          institution=institution,
+                          num=num)
+
+        return data
+
+    def get_activity(self,
+                     btid=None,
+                     rformat="json",
+                     documentID=None,
+                     plenaryprotocolID=None):
+        """
+        Retrieves activities specified by IDs
+
+        Parameters
+        ----------
+        btid: int/list, optional
+            ID of an activity entity. Can be a list to retrieve more than
+            one entity
+        rformat: str, optional
+            Return format of the data. Defaults to json. XML not implemented
+            yet. Other option is "object" which will return results as class
+            objects
+        documentID: int, optional
+            Entity ID of a document. Can be used to select activities,
+            procedures and procedure positions that are connected to the
+            document
+        plenaryprotocolID: int, optional
+            Entity ID of a plenary protocol. Can be used to select activities,
+            procedures and procedure positions that are connected to the
+            protocol
+        Returns
+        -------
+        data: list
+            a list of dictionaries or class objects of activities
+        """
+        if btid is None and documentID is None and plenaryprotocolID is None:
+            raise ValueError("Either an activity ID, document ID or plenary protocol ID must be supplied")
+        else:
+            data = self.query(resource="aktivitaet",
+                              fid=btid,
+                              rformat=rformat,
+                              documentID=documentID,
+                              plenaryprotocolID=plenaryprotocolID)
+            return data
+
+
+# Classes
 
 
 class Person:
@@ -801,7 +845,7 @@ class Drucksache:
     """This class represents a document of the German federal parliaments"""
 
     def __init__(self, dictionary):
-        self.btid = dictionary["id"]
+        self.btid = int(dictionary["id"])
         if "herausgeber" in dictionary:
             if dictionary["herausgeber"] == "BT":
                 self.publisher = "Bundestag"
@@ -1001,7 +1045,7 @@ class Vorgang:
             self.urgency = None
 
     def get_positions(self):
-        data = self.query("vorgangsposition", processID=self.btid)
+        data = self.query("vorgangsposition", procedureID=self.btid)
         for d in data:
             self.process_positions.append(Vorgangsposition(d))
 
@@ -1060,9 +1104,9 @@ class Vorgangsposition:
         else:
             self.originator = None
         if "vorgang_id" in dictionary:
-            self.processid = dictionary["vorgang_id"]
+            self.procedureID = dictionary["vorgang_id"]
         else:
-            self.processid = None
+            self.procedureID = None
         if "vorgangsposition" in dictionary:
             self.processposition = dictionary["vorgangsposition"]
         else:
@@ -1082,7 +1126,7 @@ class Vorgangsposition:
             self.institution = None
 
     def __str__(self):
-        return f'{self.instance}: ({self.processid}) {self.processtype} - {self.title} - {self.date}'
+        return f'{self.instance}: ({self.procedureID}) {self.processtype} - {self.title} - {self.date}'
 
     def __repr__(self):
         pass

@@ -8,7 +8,8 @@ class btaConnection:
 
     Methods
     -------
-    query(resource, rformat="json", num=100, fid=None, datestart=None, dateend=None, institution=None, documentID=None, plenaryprotocolID=None, procedureID=None)
+    query(resource, rformat="json", num=100, fid=None, datestart=None, dateend=None,
+          institution=None, documentID=None, plenaryprotocolID=None, procedureID=None)
         A general search function for the official Bundestag API
     search_procedure(rformat="json",num=100,fid=None,datestart=None,dateend=None):
         Searches procedures specified by the parameters
@@ -70,7 +71,8 @@ class btaConnection:
               institution=None,
               documentID=None,
               plenaryprotocolID=None,
-              procedureID=None):
+              procedureID=None,
+              v=False):
         """A general search function for the official Bundestag API
 
         Parameters
@@ -106,6 +108,7 @@ class btaConnection:
             procedureID: int, optional
                 Entity ID of a process. Can be used to select procedure positions
                 that are connected to the process
+            v: boolean, optional
         """
 
         BASE_URL = "https://search.dip.bundestag.de/api/v1/"
@@ -181,7 +184,8 @@ class btaConnection:
         prs = True
         while prs is True:
             r = requests.get(r_url, params=payload)
-            # print(r.url)
+            if v is True:
+                print(r.url)
             if r.status_code == requests.codes.ok:
                 content = r.json()
                 if content["numFound"] == 0:
@@ -224,9 +228,11 @@ class btaConnection:
                 data = {name["id"]: Vorgang(name) for name in data}
             elif resource == "vorgangsposition":
                 data = {name["id"]: Vorgangsposition(name) for name in data}
-        if len(data) == 1:
+        if len(data) == 1 and isinstance(data, dict):
             tl = list(data.keys())
             data = data[tl[0]]
+        elif len(data) == 1 and isinstance(data, list):
+            data = data[0]
         return data
 
     def search_procedure(self,

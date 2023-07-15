@@ -719,6 +719,77 @@ class btaConnection:
                           return_format=return_format)
         return data
 
+
+
+    def search_plenaryprotocol_meta(self,
+                               rformat="json",
+                               num=100,
+                               datestart=None,
+                               dateend=None,
+                               institution=None):
+        """
+        Searches plenary protocols specified by the parameters, metadata.
+
+        Parameters
+        ----------
+        rformat: str, optional
+            Return format of the data. Defaults to json. XML not implemented
+            yet. Other option is "object" which will return results as class
+            objects
+        num: int, optional
+            Number of maximal results to be returned. Defaults to 100
+        datestart: str, optional
+            Date after which entities should be retrieved. Format
+            is "YYYY-MM-DD"
+        dateend: str, optional
+            Date before which entities should be retrieved. Format
+            is "YYYY-MM-DD"
+        institution: str, optional
+            Filter results by institution BT, BR, BV or EK
+
+        Returns
+        -------
+        data: list
+            a list of dictionaries or class objects of plenary protocols
+        """
+
+        data = self.query(resource="plenarprotokoll",
+                          rformat=rformat,
+                          datestart=datestart,
+                          dateend=dateend,
+                          institution=institution,
+                          num=num,)
+
+        return data
+
+    def get_plenaryprotocol_meta(self,
+                                 btid,
+                                 rformat="json"):
+        """
+        Retrieves plenary protocols specified by IDs, only metadata.
+
+        Parameters
+        ----------
+        btid: int/list
+            ID of a plenary protocol entity. Can be a list to retrieve more than
+            one entity
+        rformat: str, optional
+            Return format of the data. Defaults to json. XML not implemented
+            yet. Other option is "object" which will return results as class
+            objects
+
+        Returns
+        -------
+        data: list
+            a list of dictionaries or class objects of plenary protocols
+        """
+
+        data = self.query(resource="plenarprotokoll",
+                          fid=btid,
+                          rformat=rformat)
+
+        return data
+
     def search_plenaryprotocol(self,
                                return_format="json",
                                num=100,

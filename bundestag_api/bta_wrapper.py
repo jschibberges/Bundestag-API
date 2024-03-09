@@ -44,7 +44,8 @@ class btaConnection:
         Retrieves plenary protocols specified by IDs
     """
 
-    def __init__(self, apikey=None, debug=False):
+
+    def __init__(self, apikey=None):
         GEN_APIKEY = "rgsaY4U.oZRQKUHdJhF9qguHMkwCGIoLaqEcaHjYLF"
 
         DATE_GEN_APIKEY = "31.05.2024"

@@ -1,6 +1,13 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime
 import requests
+import sys
+import logging
+from models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, Plenarprotokoll
+from utils import is_iso8601, parse_args_to_dict
+
+logger = logging.getLogger("bundestag_api")
+logger.addHandler(logging.NullHandler())
 
 
 class btaConnection:
@@ -8,34 +15,35 @@ class btaConnection:
 
     Methods
     -------
-    query(resource, rformat="json", num=100, fid=None, datestart=None, dateend=None,
+    query(resource, return_format="json", num=100, fid=None, date_start=None, date_end=None,
           institution=None, documentID=None, plenaryprotocolID=None, procedureID=None)
         A general search function for the official Bundestag API
-    search_procedure(rformat="json",num=100,fid=None,datestart=None,dateend=None):
+    search_procedure(return_format="json",num=100,fid=None,date_start=None,date_end=None):
         Searches procedures specified by the parameters
-    search_procedureposition(rformat="json", num=100, fid=None, datestart=None, dateend=None, procedureID=None):
+    search_procedureposition(return_format="json", num=100, fid=None, date_start=None, date_end=None, procedureID=None):
         Searches procedure positions specified by the parameters
-    search_document(rformat="json", num=100, fid=None, datestart=None, dateend=None,institution=None):
+    search_document(return_format="json", num=100, fid=None, date_start=None, date_end=None,institution=None):
         Searches documents specified by the parameters
-    search_person(rformat="json", num=100, fid=None):
+    search_person(return_format="json", num=100, fid=None):
         Searches persons specified by the parameters
-    search_plenaryprotocol(rformat="json", num=100, fid=None, datestart=None, dateend=None, institution=None):
+    search_plenaryprotocol(return_format="json", num=100, fid=None, date_start=None, date_end=None, institution=None):
         Searches plenary protocols specified by the parameters
-    search_activity(rformat="json", num=100, fid=None, datestart=None, dateend=None, documentID=None, plenaryprotocolID=None, institution=None):
+    search_activity(return_format="json", num=100, fid=None, date_start=None, date_end=None, documentID=None, plenaryprotocolID=None, institution=None):
         Searches activities specified by the parameters
-    get_activity(btid, rformat="json"):
+    get_activity(btid, return_format="json"):
         Retrieves activities specified by IDs
-    get_procedure(btid, rformat="json"):
+    get_procedure(btid, return_format="json"):
         Retrieves procedures specified by IDs
-    get_procedureposition(btid, rformat="json"):
+    get_procedureposition(btid, return_format="json"):
         Retrieves procedure positions specified by IDs
-    get_document(btid, rformat="json"):
+    get_document(btid, return_format="json"):
         Retrieves documents specified by IDs
-    get_person(btid, rformat="json"):
+    get_person(btid, return_format="json"):
         Retrieves persons specified by IDs
-    get_plenaryprotocol(btid, rformat="json"):
+    get_plenaryprotocol(btid, return_format="json"):
         Retrieves plenary protocols specified by IDs
     """
+
 
     def __init__(self, apikey=None):
         GEN_APIKEY = "rgsaY4U.oZRQKUHdJhF9qguHMkwCGIoLaqEcaHjYLF"
@@ -45,15 +53,16 @@ class btaConnection:
 
         today = datetime.now()
         if apikey is None and date_expiry.date() < today.date():
-            print("You need to supply your own API key.")
+            logger.error("You need to supply your own API key.")
         elif apikey is None and date_expiry.date() > today.date():
             self.apikey = GEN_APIKEY
-            print("General API key used. It is valid until 31.05.2023.")
+            logger.info("General API key used. It is valid until 31.05.2024.")
         elif apikey is not None:
             if not isinstance(apikey, str) and len(apikey) == 42:
                 raise ValueError("No (correct) API key provided")
             else:
                 self.apikey = apikey
+                logger.debug("Personal API key is used.")
 
     def __str__(self):
         return "API key: "+str(self.apikey)
@@ -63,16 +72,21 @@ class btaConnection:
 
     def query(self,
               resource,
-              rformat="json",
+              return_format="json",
               num=100,
               fid=None,
-              datestart=None,
-              dateend=None,
+              date_start=None,
+              date_end=None,
+              updated_since=None,
+              updated_until=None,
               institution=None,
               documentID=None,
               plenaryprotocolID=None,
               procedureID=None,
-              v=False):
+              descriptor=None,
+              sachgebiet=None,
+              document_type=None,
+              title=None,):
         """A general search function for the official Bundestag API
 
         Parameters
@@ -81,7 +95,7 @@ class btaConnection:
                 The resource type to be queried. options are aktivitaet,
                 drucksache, drucksache-text, person, plenarprotokoll,
                 plenarprotokoll-text, vorgang or vorgangsposition
-            rformat: str, optional
+            return_format: str, optional
                 Return format of the data. Defaults to json. XML not implemented
                 yet. Other option is "object" which will return results as class
                 objects
@@ -89,12 +103,16 @@ class btaConnection:
                 Number of maximal results to be returned. Defaults to 100
             fid: int/list, optional
                 ID of an entity. Can be a list to retrieve more than one entity
-            datestart: str, optional
+            date_start: str, optional
                 Date after which entities should be retrieved. Format
                 is "YYYY-MM-DD"
-            dateend: str, optional
+            date_end: str, optional
                 Date before which entities should be retrieved. Format
                 is "YYYY-MM-DD"
+            updated_since: str, optional
+                Date and time after which updated documents are to be retrieved
+            updated_until: str, optional
+                Date and time until which updated documents are to be retrieved
             institution: str, optional
                 Filter results by institution BT, BR, BV or EK
             documentID: int, optional
@@ -108,7 +126,20 @@ class btaConnection:
             procedureID: int, optional
                 Entity ID of a process. Can be used to select procedure positions
                 that are connected to the process
-            v: boolean, optional
+            descriptor: str/list, optional
+                Keyword that is connected to the entities. Multiple strings can
+                be supplied as a list but they will be joined via AND. An OR-
+                search is not possible
+            sachgebiet: str/list, optional
+                Political field that is connected to the entities. Multiple 
+                strings can be supplied as a list but they will be joined via
+                AND. An OR-search is not possible
+            document_type: str, optional
+                The type of document to be returned.
+            title: str/list, optional
+                Keyword that can be found in the title of documents. Multiple 
+                strings can be supplied as a list and will be joined via
+                an OR-search.
         """
 
         BASE_URL = "https://search.dip.bundestag.de/api/v1/"
@@ -120,72 +151,140 @@ class btaConnection:
             resource = resource.lower()
         if resource not in RESOURCETYPES:
             raise ValueError("No or wrong resource")
-        if isinstance(fid, list):
-            for i in fid:
-                if not isinstance(fid, int):
-                    try:
-                        fid = int(fid)
-                    except ValueError as e:
-                        raise Exception("IDs must be integers: {}".format(e)) from None
+        # Validate fid
+        if isinstance(fid, list) is True:
+            if all(isinstance(item, int) for item in fid) is False:
+                try:
+                    fid = [int(item) for item in fid]
+                except ValueError as e:
+                    raise Exception("IDs must be integers: {}".format(e)) from None
+            else:
+                fid = '&f.id='.join(map(str, fid))
         elif fid is not None:
             if not isinstance(fid, int):
                 try:
                     fid = int(fid)
                 except ValueError as e:
                     raise Exception("IDs must be integers: {}".format(e)) from None
-        if rformat not in ["json", "xml", "object"]:
-            raise ValueError("rformat: Not a correct format!")
+        if return_format not in ["json", "xml", "object", "pandas"]:
+            raise ValueError("return_format: Not a correct format!")
         if institution is not None and institution not in INSTITUTIONS:
             raise ValueError("Unknown institution")
-        if resource not in ["aktivitaet", "vorgang", "vorgangsposition"] and documentID is not None:
-            raise ValueError(
-                "documentID must be combined with resource 'aktivitaet', 'vorgang' or 'vorgangsposition'")
-        elif resource in ["aktivitaet", "vorgang", "vorgangsposition"] and documentID is not None and not isinstance(documentID, int):
-            raise ValueError("documentID must be an integer")
-        if resource not in ["aktivitaet", "vorgang", "vorgangsposition"] and plenaryprotocolID is not None:
-            raise ValueError(
-                "plenaryprotocolID must be combined with resource 'aktivitaet', 'vorgang' or 'vorgangsposition'")
-        elif resource in ["aktivitaet", "vorgang", "vorgangsposition"] and plenaryprotocolID is not None and not isinstance(plenaryprotocolID, int):
-            raise ValueError("plenaryprotocolID must be an integer")
-        if resource not in ["vorgangsposition"] and procedureID is not None:
-            raise ValueError(
-                "procedureID must be combined with resource 'vorgangsposition'")
-        elif resource in ["vorgangsposition"] and procedureID is not None and not isinstance(procedureID, int):
-            raise ValueError("procedureID must be an integer")
-        if plenaryprotocolID is not None and documentID is not None:
+        if resource not in ["aktivitaet", "vorgang", "vorgangsposition"]:
+            if documentID is not None:
+                raise ValueError(
+                    "documentID must be combined with resource 'aktivitaet', 'vorgang' or 'vorgangsposition'")
+            if plenaryprotocolID is not None:
+                raise ValueError(
+                    "plenaryprotocolID must be combined with resource 'aktivitaet', 'vorgang' or 'vorgangsposition'")
+        elif resource in ["aktivitaet", "vorgang", "vorgangsposition"]:
+            if documentID is not None and not isinstance(documentID, int):
+                raise ValueError("documentID must be an integer")
+            if plenaryprotocolID is not None and not isinstance(plenaryprotocolID, int):
+                raise ValueError("plenaryprotocolID must be an integer")
+        if resource not in ["vorgangsposition"]:
+            if procedureID is not None:
+                raise ValueError(
+                    "procedureID must be combined with resource 'vorgangsposition'")
+        elif resource in ["vorgangsposition"]:
+            if procedureID is not None and not isinstance(procedureID, int):
+                raise ValueError("procedureID must be an integer")
+        if resource in ["drucksache", "drucksache-text", "vorgang", "vorgangsposition"]:
+            if title is not None:
+                if isinstance(title, list) is True:
+                    if all(isinstance(item, str) for item in title) is False:
+                        raise ValueError("All sachgebiet items need to be of type string.")
+                    elif all(len(item) < 100 for item in title) is False:
+                        raise ValueError("Strings are over 100 characters in length.")
+                    else:
+                        title = '&f.sachgebiet='.join(map(str, title))
+                elif isinstance(title, str) is True:
+                    if len(title) < 100:
+                        raise ValueError("String is over 100 characters in length.")
+                else:
+                    raise ValueError("Sachgebiet must be string or a list of strings.")
+            if document_type is not None:
+                if isinstance(document_type, str) is False:
+                    raise ValueError("document_type must be a string.")
+        if resource not in ["drucksache", "drucksache-text", "vorgang", "vorgangsposition"]:
+            if title is not None:
+                raise ValueError("Title must be combined with a document of process")
+            if document_type is not None:
+                raise ValueError("Document type must be combined with a document")
+        # Validate that only one of the possible IDs is given and raise an error otherwise
+        non_none_count = sum(arg is not None for arg in [
+                             plenaryprotocolID, documentID, procedureID])
+        if non_none_count > 1:
             raise ValueError(
                 "Can't select more than one of documentID, plenaryprotocolID and procedureID")
-        if plenaryprotocolID is not None and procedureID is not None:
-            raise ValueError(
-                "Can't select more than one of documentID, plenaryprotocolID and procedureID")
-        if documentID is not None and procedureID is not None:
-            raise ValueError(
-                "Can't select more than one of documentID, plenaryprotocolID and procedureID")
+        # Validate the num parameter is an integer and positive
         if not isinstance(num, int) or num <= 0:
             raise ValueError("num must be an integer larger than zero")
+        # Validate updated_since and updated_until are both in ISO 8601 format
+        if updated_since is not None:
+            if is_iso8601(updated_since) != True:
+                raise ValueError(
+                    "updated_since must be a string in the following format '2022-06-24T09:45:00'")
+        if updated_until is not None:
+            if is_iso8601(updated_until) != True:
+                raise ValueError(
+                    "updated_until must be a string in the following format '2022-06-24T09:45:00'")
+        # Validate descriptors
+        if descriptor is not None:
+            if isinstance(descriptor, list) is True:
+                if all(isinstance(item, str) for item in descriptor) is False:
+                    raise ValueError("All descriptor items need to be of type string.")
+                elif all(len(item) < 100 for item in descriptor) is False:
+                    raise ValueError("Strings are over 100 characters in length.")
+                else:
+                    descriptor = '&f.deskriptor='.join(map(str, descriptor))
+            elif isinstance(descriptor, str) is True:
+                if len(descriptor) < 100:
+                    raise ValueError("String is over 100 characters in length.")
+            else:
+                raise ValueError("Descriptor must be string or a list of strings.")
+        # Validate sachgebiet
+        if sachgebiet is not None:
+            if isinstance(sachgebiet, list) is True:
+                if all(isinstance(item, str) for item in sachgebiet) is False:
+                    raise ValueError("All sachgebiet items need to be of type string.")
+                elif all(len(item) < 100 for item in sachgebiet) is False:
+                    raise ValueError("Strings are over 100 characters in length.")
+                else:
+                    sachgebiet = '&f.sachgebiet='.join(map(str, sachgebiet))
+            elif isinstance(sachgebiet, str) is True:
+                if len(sachgebiet) < 100:
+                    raise ValueError("String is over 100 characters in length.")
+            else:
+                raise ValueError("Sachgebiet must be string or a list of strings.")
+
         r_url = BASE_URL+resource
         return_object = False
-        if rformat == "object":
-            rformat = "json"
+        if return_format == "object":
+            return_format = "json"
             return_object = True
-        if isinstance(fid, list) is True:
-            fid = '&f.id='.join(map(str, fid))
+
         payload = {"apikey": self.apikey,
-                   "format": rformat,
+                   "format": return_format,
                    "f.id": fid,
-                   "f.datum.start": datestart,
-                   "f.datum.end": dateend,
+                   "f.datum.start": date_start,
+                   "f.datum.end": date_end,
+                   "f.aktualisiert.start": updated_since,
+                   "f.aktualisiert.end": updated_until,
                    "f.drucksache": documentID,
                    "f.plenarprotokoll": plenaryprotocolID,
                    "f.vorgang": procedureID,
                    "f.zuordnung": institution,
+                   "f.deskriptor": descriptor,
+                   "f.sachgebiet": sachgebiet,
+                   "f.drucksachetyp": document_type,
+                   "f.titel": title,
                    "cursor": None}
         data = []
         prs = True
         while prs is True:
             r = requests.get(r_url, params=payload)
-            if v is True:
-                print(r.url)
+            logger.debug(r.url)
             if r.status_code == requests.codes.ok:
                 content = r.json()
                 if content["numFound"] == 0:
@@ -204,13 +303,17 @@ class btaConnection:
                         prs = False
                     payload["cursor"] = content["cursor"]
             elif r.status_code == 400:
-                return("A syntax error occured. Code {code}: {message}".format(code=r.status_code, message=r.reason))
+                logger.error("A syntax error occured. Code {code}: {message}".format(
+                    code=r.status_code, message=r.reason))
             elif r.status_code == 401:
-                return("An authorization error occured. Likely an error with you API key. Code {code}: {message}".format(code=r.status_code, message=r.reason))
+                logger.error("An authorization error occured. Likely an error with you API key. Code {code}: {message}".format(
+                    code=r.status_code, message=r.reason))
             elif r.status_code == 404:
-                return("The API is not reachable. Code {code}: {message}".format(code=r.status_code, message=r.reason))
+                logger.error("The API is not reachable. Code {code}: {message}".format(
+                    code=r.status_code, message=r.reason))
             else:
-                return("An error occured. Code {code}: {message}".format(code=r.status_code, message=r.reason))
+                logger.error("An error occured. Code {code}: {message}".format(
+                    code=r.status_code, message=r.reason))
         if return_object is True:
             if resource == "aktivitaet":
                 data = {name["id"]: Aktivitaet(name) for name in data}
@@ -228,6 +331,9 @@ class btaConnection:
                 data = {name["id"]: Vorgang(name) for name in data}
             elif resource == "vorgangsposition":
                 data = {name["id"]: Vorgangsposition(name) for name in data}
+        if return_format == "pandas":
+            import pandas as pd
+            data = pd.json_normalize(data)
         if len(data) == 1 and isinstance(data, dict):
             tl = list(data.keys())
             data = data[tl[0]]
@@ -236,17 +342,23 @@ class btaConnection:
         return data
 
     def search_procedure(self,
-                         rformat="json",
+                         return_format="json",
                          num=100,
                          fid=None,
-                         datestart=None,
-                         dateend=None):
+                         date_start=None,
+                         date_end=None,
+                         updated_since=None,
+                         updated_until=None,
+                         descriptor=None,
+                         sachgebiet=None,
+                         document_type=None,
+                         title=None,):
         """
         Searches procedures specified by the parameters
 
         Parameters
         ----------
-        rformat: str, optional
+        return_format: str, optional
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
@@ -255,12 +367,30 @@ class btaConnection:
         fid: int/list, optional
             ID of a procedure entity. Can be a list to retrieve more than
             one entity
-        datestart: str, optional
+        date_start: str, optional
             Date after which entities should be retrieved. Format
             is "YYYY-MM-DD"
-        dateend: str, optional
+        date_end: str, optional
             Date before which entities should be retrieved. Format
             is "YYYY-MM-DD"
+        updated_since: str, optional
+            Date and time after which updated documents are to be retrieved
+        updated_until: str, optional
+            Date and time until which updated documents are to be retrieved
+        descriptor: str/list, optional
+            Keyword that is connected to the entities. Multiple strings can
+            be supplied as a list but they will be joined via AND. An OR-
+            search is not possible         
+        sachgebiet: str/list, optional
+            Political field that is connected to the entities. Multiple 
+            strings can be supplied as a list but they will be joined via
+            AND. An OR-search is not possible
+        document_type: str, optional
+            The type of document to be returned.
+        title: str/list, optional
+            Keyword that can be found in the title of documents. Multiple 
+            strings can be supplied as a list and will be joined via
+            an OR-search.
 
         Returns
         -------
@@ -269,16 +399,20 @@ class btaConnection:
 
         """
         data = self.query(resource="vorgang",
-                          rformat=rformat,
+                          return_format=return_format,
                           fid=fid,
-                          datestart=datestart,
-                          dateend=dateend,
-                          num=num,)
+                          date_start=date_start,
+                          date_end=date_end,
+                          num=num,
+                          updated_since=updated_since,
+                          updated_until=updated_until,
+                          descriptor=descriptor,
+                          sachgebiet=sachgebiet,)
         return data
 
     def get_procedure(self,
                       btid=None,
-                      rformat="json",
+                      return_format="json",
                       documentID=None,
                       plenaryprotocolID=None):
         """
@@ -289,7 +423,7 @@ class btaConnection:
         btid: int/list, optional
             ID of a procedure entity. Can be a list to retrieve more than
             one entity
-        rformat: str, optional
+        return_format: str, optional
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
@@ -306,27 +440,32 @@ class btaConnection:
             a list of dictionaries or class objects of procedures
         """
         if btid is None and documentID is None and plenaryprotocolID is None:
-            raise ValueError("Either an procedure ID, document ID or plenary protocol ID must be supplied")
+            raise ValueError(
+                "Either an procedure ID, document ID or plenary protocol ID must be supplied")
         else:
             data = self.query(resource="vorgang",
                               fid=btid,
-                              rformat=rformat,
+                              return_format=return_format,
                               documentID=documentID,
                               plenaryprotocolID=plenaryprotocolID)
             return data
 
     def search_procedureposition(self,
-                                 rformat="json",
+                                 return_format="json",
                                  num=100,
                                  fid=None,
-                                 datestart=None,
-                                 dateend=None):
+                                 date_start=None,
+                                 date_end=None,
+                                 updated_since=None,
+                                 updated_until=None,
+                                 document_type=None,
+                                 title=None,):
         """
         Searches procedure positions specified by the parameters
 
         Parameters
         ----------
-        rformat: str, optional
+        return_format: str, optional
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
@@ -335,12 +474,22 @@ class btaConnection:
         fid: int/list, optional
             ID of an procedure position entity. Can be a list to retrieve more
             than one entity
-        datestart: str, optional
+        date_start: str, optional
             Date after which entities should be retrieved. Format
             is "YYYY-MM-DD"
-        dateend: str, optional
+        date_end: str, optional
             Date before which entities should be retrieved. Format
             is "YYYY-MM-DD"
+        updated_since: str, optional
+            Date and time after which updated documents are to be retrieved
+        updated_until: str, optional
+            Date and time until which updated documents are to be retrieved
+        document_type: str, optional
+            The type of document to be returned.
+        title: str/list, optional
+            Keyword that can be found in the title of documents. Multiple 
+            strings can be supplied as a list and will be joined via
+            an OR-search.
 
         Returns
         -------
@@ -349,16 +498,18 @@ class btaConnection:
         """
 
         data = self.query(resource="vorgangsposition",
-                          rformat=rformat,
+                          return_format=return_format,
                           fid=fid,
-                          datestart=datestart,
-                          dateend=dateend,
-                          num=num,)
+                          date_start=date_start,
+                          date_end=date_end,
+                          num=num,
+                          updated_since=updated_since,
+                          updated_until=updated_until,)
         return data
 
     def get_procedureposition(self,
                               btid,
-                              rformat="json",
+                              return_format="json",
                               documentID=None,
                               procedureID=None,
                               plenaryprotocolID=None):
@@ -370,7 +521,7 @@ class btaConnection:
         btid: int/list, optional
             ID of a procedure position entity. Can be a list to retrieve more than
             one entity
-        rformat: str, optional
+        return_format: str, optional
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
@@ -389,29 +540,35 @@ class btaConnection:
             a list of dictionaries or class objects of procedure positions
         """
         if btid is None and documentID is None and procedureID is None:
-            raise ValueError("Either an procedure ID, document ID or procedure ID must be supplied")
+            raise ValueError(
+                "Either an procedure ID, document ID or procedure ID must be supplied")
         else:
             data = self.query(resource="vorgangsposition",
                               fid=btid,
-                              rformat=rformat,
+                              return_format=return_format,
                               documentID=documentID,
                               procedureID=procedureID,
                               plenaryprotocolID=plenaryprotocolID)
             return data
 
     def search_document(self,
-                        rformat="json",
+                        return_format="json",
                         num=100,
                         fid=None,
-                        datestart=None,
-                        dateend=None,
-                        institution=None):
+                        date_start=None,
+                        date_end=None,
+                        institution=None,
+                        fulltext=False,
+                        updated_since=None,
+                        updated_until=None,
+                        document_type=None,
+                        title=None,):
         """
         Searches documents specified by the parameters
 
         Parameters
         ----------
-        rformat: str, optional
+        return_format: str, optional
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
@@ -419,14 +576,26 @@ class btaConnection:
             Number of maximal results to be returned. Defaults to 100
         fid: int/list, optional
             ID of a document entity. Can be a list to retrieve more than one entity
-        datestart: str, optional
+        date_start: str, optional
             Date after which entities should be retrieved. Format
             is "YYYY-MM-DD"
-        dateend: str, optional
+        date_end: str, optional
             Date before which entities should be retrieved. Format
             is "YYYY-MM-DD"
         institution: str, optional
             Filter results by institution BT, BR, BV or EK
+        fulltext: boolean
+            Whether the fulltext (if available) should be requested or not. Default is false
+        updated_since: str, optional
+            Date and time after which updated documents are to be retrieved
+        updated_until: str, optional
+            Date and time until which updated documents are to be retrieved
+        document_type: str, optional
+            The type of document to be returned.
+        title: str/list, optional
+            Keyword that can be found in the title of documents. Multiple 
+            strings can be supplied as a list and will be joined via
+            an OR-search.
 
         Returns
         -------
@@ -434,18 +603,28 @@ class btaConnection:
             a list of dictionaries or class objects of documents
         """
 
-        data = self.query(resource="drucksache-text",
-                          rformat=rformat,
+        if fulltext == False:
+            resource = "drucksache"
+        elif fulltext == True:
+            resource = "drucksache-text"
+        else:
+            resource = "drucksache"
+
+        data = self.query(resource=resource,
+                          return_format=return_format,
                           fid=fid,
-                          datestart=datestart,
-                          dateend=dateend,
+                          date_start=date_start,
+                          date_end=date_end,
                           institution=institution,
-                          num=num,)
+                          num=num,
+                          updated_since=updated_since,
+                          updated_until=updated_until,)
         return data
 
     def get_document(self,
                      btid,
-                     rformat="json"):
+                     return_format="json",
+                     fulltext=False):
         """
         Retrieves documents specified by IDs
 
@@ -454,10 +633,12 @@ class btaConnection:
         btid: int/list
             ID of a document entity. Can be a list to retrieve more than
             one entity
-        rformat: str, optional
+        return_format: str, optional
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
+        fulltext: boolean
+            Whether the fulltext (if available) should be requested or not. Default is False    
 
         Returns
         -------
@@ -465,25 +646,38 @@ class btaConnection:
             a list of dictionaries or class objects of documents
         """
 
-        data = self.query(resource="drucksache-text",
+        if fulltext == False:
+            resource = "drucksache"
+        elif fulltext == True:
+            resource = "drucksache-text"
+        else:
+            resource = "drucksache"
+
+        data = self.query(resource=resource,
                           fid=btid,
-                          rformat=rformat)
+                          return_format=return_format)
         return data
 
     def search_person(self,
-                      rformat="json",
-                      num=100):
+                      return_format="json",
+                      num=100,
+                      updated_since=None,
+                      updated_until=None,):
         """
         Searches persons specified by the parameters
 
         Parameters
         ----------
-        rformat: str, optional
+        return_format: str, optional
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
         num: int, optional
             Number of maximal results to be returned. Defaults to 100
+        updated_since: str, optional
+            Date and time after which updated documents are to be retrieved
+        updated_until: str, optional
+            Date and time until which updated documents are to be retrieved
 
         Returns
         -------
@@ -492,13 +686,15 @@ class btaConnection:
         """
 
         data = self.query(resource="person",
-                          rformat=rformat,
-                          num=num,)
+                          return_format=return_format,
+                          num=num,
+                          updated_since=updated_since,
+                          updated_until=updated_until,)
         return data
 
     def get_person(self,
                    btid,
-                   rformat="json"):
+                   return_format="json"):
         """
         Retrieves persons specified by IDs
 
@@ -507,7 +703,7 @@ class btaConnection:
         btid: int/list
             ID of a person entity. Can be a list to retrieve more than
             one entity
-        rformat: str, optional
+        return_format: str, optional
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
@@ -520,34 +716,38 @@ class btaConnection:
 
         data = self.query(resource="person",
                           fid=btid,
-                          rformat=rformat)
+                          return_format=return_format)
         return data
 
     def search_plenaryprotocol(self,
-                               rformat="json",
+                               return_format="json",
                                num=100,
-                               datestart=None,
-                               dateend=None,
-                               institution=None):
+                               **kwargs):
         """
         Searches plenary protocols specified by the parameters
 
         Parameters
         ----------
-        rformat: str, optional
+        return_format: str, optional
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
         num: int, optional
             Number of maximal results to be returned. Defaults to 100
-        datestart: str, optional
+        date_start: str, optional
             Date after which entities should be retrieved. Format
             is "YYYY-MM-DD"
-        dateend: str, optional
+        date_end: str, optional
             Date before which entities should be retrieved. Format
             is "YYYY-MM-DD"
         institution: str, optional
             Filter results by institution BT, BR, BV or EK
+        fulltext: boolean
+            Whether the fulltext (if available) should be requested or not. Default is false
+        updated_since: str, optional
+            Date and time after which updated documents are to be retrieved
+        updated_until: str, optional
+            Date and time until which updated documents are to be retrieved
 
         Returns
         -------
@@ -555,18 +755,35 @@ class btaConnection:
             a list of dictionaries or class objects of plenary protocols
         """
 
-        data = self.query(resource="plenarprotokoll-text",
-                          rformat=rformat,
-                          datestart=datestart,
-                          dateend=dateend,
+        date_start = kwargs.get("date_start")
+        date_end = kwargs.get("date_end")
+        institution = kwargs.get("institution")
+        fulltext = kwargs.get("fulltext")
+        updated_since = kwargs.get("updated_since")
+        updated_until = kwargs.get("updated_until")
+
+        if fulltext == False:
+            resource = "plenarprotokoll"
+        elif fulltext == True:
+            resource = "plenarprotokoll-text"
+        else:
+            resource = "plenarprotokoll"
+
+        data = self.query(resource=resource,
+                          return_format=return_format,
+                          date_start=date_start,
+                          date_end=date_end,
                           institution=institution,
-                          num=num,)
+                          num=num,
+                          updated_since=updated_since,
+                          updated_until=updated_until,)
 
         return data
 
     def get_plenaryprotocol(self,
                             btid,
-                            rformat="json"):
+                            return_format="json",
+                            fulltext=False):
         """
         Retrieves plenary protocols specified by IDs
 
@@ -575,10 +792,12 @@ class btaConnection:
         btid: int/list
             ID of a plenary protocol entity. Can be a list to retrieve more than
             one entity
-        rformat: str, optional
+        return_format: str, optional
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
+        fulltext: boolean
+            Whether the fulltext (if available) should be requested or not. Default is false
 
         Returns
         -------
@@ -586,36 +805,54 @@ class btaConnection:
             a list of dictionaries or class objects of plenary protocols
         """
 
-        data = self.query(resource="plenarprotokoll-text",
+        if fulltext == False:
+            resource = "plenarprotokoll"
+        elif fulltext == True:
+            resource = "plenarprotokoll-text"
+        else:
+            resource = "plenarprotokoll"
+
+        data = self.query(resource=resource,
                           fid=btid,
-                          rformat=rformat)
+                          return_format=return_format)
         return data
 
     def search_activity(self,
-                        rformat="json",
+                        return_format="json",
                         num=100,
-                        datestart=None,
-                        dateend=None,
-                        institution=None):
+                        date_start=None,
+                        date_end=None,
+                        institution=None,
+                        updated_since=None,
+                        updated_until=None,
+                        descriptor=None,):
         """
         Searches activities specified by the parameters
 
         Parameters
         ----------
-        rformat: str, optional
+        return_format: str, optional
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
         num: int, optional
             Number of maximal results to be returned. Defaults to 100
-        datestart: str, optional
+        date_start: str, optional
             Date after which entities should be retrieved. Format
             is "YYYY-MM-DD"
-        dateend: str, optional
+        date_end: str, optional
             Date before which entities should be retrieved. Format
             is "YYYY-MM-DD"
         institution: str, optional
             Filter results by institution BT, BR, BV or EK
+        updated_since: str, optional
+            Date and time after which updated documents are to be retrieved
+        updated_until: str, optional
+            Date and time until which updated documents are to be retrieved
+        descriptor: str/list, optional
+            Keyword that is connected to the entities. Multiple strings can
+            be supplied as a list but they will be joined via AND. An OR-
+            search is not possible         
 
         Returns
         -------
@@ -624,17 +861,20 @@ class btaConnection:
         """
 
         data = self.query(resource="aktivitaet",
-                          rformat=rformat,
-                          datestart=datestart,
-                          dateend=dateend,
+                          return_format=return_format,
+                          date_start=date_start,
+                          date_end=date_end,
                           institution=institution,
-                          num=num)
+                          num=num,
+                          updated_since=updated_since,
+                          updated_until=updated_until,
+                          descriptor=descriptor)
 
         return data
 
     def get_activity(self,
                      btid=None,
-                     rformat="json",
+                     return_format="json",
                      documentID=None,
                      plenaryprotocolID=None):
         """
@@ -645,7 +885,7 @@ class btaConnection:
         btid: int/list, optional
             ID of an activity entity. Can be a list to retrieve more than
             one entity
-        rformat: str, optional
+        return_format: str, optional
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
@@ -663,536 +903,83 @@ class btaConnection:
             a list of dictionaries or class objects of activities
         """
         if btid is None and documentID is None and plenaryprotocolID is None:
-            raise ValueError("Either an activity ID, document ID or plenary protocol ID must be supplied")
+            raise ValueError(
+                "Either an activity ID, document ID or plenary protocol ID must be supplied")
         else:
             data = self.query(resource="aktivitaet",
                               fid=btid,
-                              rformat=rformat,
+                              return_format=return_format,
                               documentID=documentID,
                               plenaryprotocolID=plenaryprotocolID)
             return data
 
+    def list_methods(self):
+        """
+        list all methods offered by btaConnection
 
-# Classes
+        Returns
+        -------
+        data: list
+            A list of strings
 
-
-class Person:
-    """This class represents a German parliamentarian"""
-
-    def __init__(self, dictionary):
-        self.btid = dictionary["id"]
-        if "nachname" in dictionary:
-            self.lastname = dictionary["nachname"]
-        else:
-            self.lastname = None
-        if "vorname" in dictionary:
-            self.firstname = dictionary["vorname"]
-        else:
-            self.firstname = None
-        mdbrole = False
-        if "basisdatum" in dictionary:
-            self.basedate = dictionary["basisdatum"]
-        else:
-            self.basedate = None
-        if "datum" in dictionary:
-            self.date = dictionary["datum"]
-        else:
-            self.date = None
-        if "namenszusatz" in dictionary:
-            self.nameaddendum = dictionary["namenszusatz"]
-        ttl = dictionary["titel"].split(",")
-        if ttl[1] == " MdB":
-            self.faction = ttl[2].strip()
-            mdbrole = True
-        elif "person_roles" in dictionary:
-            if "fraktion" in dictionary["person_roles"][0]:
-                self.faction = dictionary["person_roles"][0]["fraktion"]
-        else:
-            self.faction = None
-        if ttl[0].split(dictionary["vorname"])[0] != "":
-            self.titel = ttl[0].split(dictionary["vorname"])[0].strip()
-        else:
-            self.titel = None
-        if "wahlperiode" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode"]
-        else:
-            self.legislativeperiod = None
-        if "person_roles" in dictionary:
-            liro = []
-            for r in dictionary["person_roles"]:
-                liro.append(Role(r))
-            self.roles = liro
-        elif "person_roles" not in dictionary and mdbrole is True and "wahlperiode" in dictionary:
-            self.roles = [Role({"funktion": "MdB",
-                               "fraktion": self.faction,
-                                "nachname": self.lastname,
-                                "vorname": self.firstname,
-                                "wahlperiode_nummer": self.legislativeperiod
-                                })]
-        else:
-            self.roles = None
-        if "wahlperiode" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode"]
-        else:
-            self.legislativeperiod = None
-
-    def returnroles(self):
-        for r in self.roles:
-            print(r.returnrole())
-
-    def updateByID(self, apikey=None):
-        if apikey is None:
-            raise ValueError("Function needs an API key.")
-        dat1 = self.query(apikey, resource="person", fid=self.btid)
-        dictionary = dat1["documents"][0]
-        mdbrole = False
-        if "basisdatum" in dictionary:
-            self.basedate = dictionary["basisdatum"]
-        else:
-            self.basedate = None
-        if "datum" in dictionary:
-            self.date = dictionary["datum"]
-        else:
-            self.date = None
-        if "namenszusatz" in dictionary:
-            self.nameaddendum = dictionary["namenszusatz"]
-        ttl = dictionary["titel"].split(",")
-        if ttl[1] == " MdB":
-            self.faction = ttl[2].strip()
-            mdbrole = True
-        elif "person_roles" in dictionary:
-            if "fraktion" in dictionary["person_roles"][0]:
-                self.faction = dictionary["person_roles"][0]["fraktion"]
-        else:
-            self.faction = None
-        if ttl[0].split(dictionary["vorname"])[0] != "":
-            self.titel = ttl[0].split(dictionary["vorname"])[0].strip()
-        else:
-            self.titel = None
-        if "wahlperiode" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode"]
-        else:
-            self.legislativeperiod = None
-        if "person_roles" in dictionary:
-            liro = []
-            for r in dictionary["person_roles"]:
-                liro.append(Role(r))
-            self.roles = liro
-        elif "person_roles" not in dictionary and mdbrole is True and "wahlperiode" in dictionary:
-            self.roles = [Role({"funktion": "MdB",
-                               "fraktion": self.faction,
-                                "nachname": self.lastname,
-                                "vorname": self.firstname,
-                                "wahlperiode_nummer": self.legislativeperiod
-                                })]
-        else:
-            self.roles = None
-        if "wahlperiode" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode"]
-        else:
-            self.legislativeperiod = None
+        """
+        list_of_methods = dir(btaConnection)
+        list_of_methods = [item for item in list_of_methods if "__" not in item]
+        """
+        list_of_methods = ["get_activity","search_activity","get_person",
+                           "search_person", "get_plenaryprotocol",
+                           "search_plenaryprotocol", "get_document",
+                           "search_document", "get_procedureposition",
+                           "search_procedureposition", "get_procedure",
+                           "search_procedure", "query"] 
+        """
+        return list_of_methods
 
 
-class Role:
-    """This class presents a role in the German parliamentary system."""
-
-    def __init__(self, dictionary):
-        self.function = dictionary["funktion"]
-        if "wahlperiode_nummer" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode_nummer"]
+def main_function():
+    arguments = parse_args_to_dict(sys.argv[1:])
+    if arguments.get("o") is not None:
+        output_format = arguments.get("o")
+        output_defined = True
+        arguments.pop("o")
+        if arguments.get("n") is not None:
+            file_name = arguments.get("n")
+            if output_format not in file_name:
+                file_name = file_name+"."+output_format
+            arguments.pop("n")
         else:
-            self.legislativeperiod = None
-        if "namenszusatz" in dictionary:
-            self.nameaddendum = dictionary["namenszusatz"]
+            raise ValueError("Output defined but no filename given.")
+    if arguments.get("apikey") is not None:
+        bta = btaConnection(apikey=arguments.get("apikey"))
+        arguments.pop("apikey")
+    else:
+        bta = btaConnection()
+    if arguments.get("method") is not None:
+        if arguments.get("method") in bta.list_methods():
+            method = arguments.get("method")
+            arguments.pop("method")
+            if method == "searchProcedure":
+                data = bta.search_procedure(arguments)
         else:
-            self.nameaddendum = None
-        if "funktionszusatz" in dictionary:
-            self.functionaddendum = dictionary["funktionszusatz"]
-        else:
-            self.functionaddendum = None
-        if "fraktion" in dictionary:
-            self.faction = dictionary["fraktion"]
-        else:
-            self.faction = None
-        if "bundesland" in dictionary:
-            self.federalstate = dictionary["bundesland"]
-        else:
-            self.federalstate = None
-        if "nachname" in dictionary:
-            self.lastname = dictionary["nachname"]
-        else:
-            self.lastname = None
-        if "vorname" in dictionary:
-            self.firstname = dictionary["vorname"]
-        else:
-            self.firstname = None
-        if "wahlkreiszusatz" in dictionary:
-            self.districtaddendum = dictionary["wahlkreiszusatz"]
-        else:
-            self.districtaddendum = None
-        if "ressort_titel" in dictionary:
-            self.department = dictionary["ressort_titel"]
-        else:
-            self.department = None
-
-    def __str__(self):
-        return f'Person: {self.firstname}{" " if self.nameaddendum!=None else ""}{self.nameaddendum if self.nameaddendum!=None else ""} {self.lastname} {"(" if self.faction!= None else ""}{self.faction if self.faction!= None else ""}{")" if self.faction!= None else ""} - {self.function}'
-
-    def __repr__(self):
-        return f'Person: {self.firstname}{" " if self.nameaddendum!=None else ""}{self.nameaddendum if self.nameaddendum!=None else ""} {self.lastname} {"(" if self.faction!= None else ""}{self.faction if self.faction!= None else ""}{")" if self.faction!= None else ""} - {self.function}'
-
-    def returnrole(self):
-        return(
-            f'{self.firstname}{" " if self.nameaddendum!=None else ""}{self.nameaddendum if self.nameaddendum!=None else ""} {self.lastname} {"(" if self.faction!= None else ""}{self.faction if self.faction!= None else ""}{")" if self.faction!= None else ""},'
-            f'{self.function}{" - " if self.functionaddendum!= None else ""}{self.functionaddendum if self.functionaddendum!= None else ""}{", " if self.department!= None else ""}{self.department if self.department!= None else ""}{" (" if self.federalstate!=None else ""}{self.federalstate if self.federalstate!=None else ""}{")" if self.federalstate!=None else ""}')
-
-
-class Drucksache:
-    """This class represents a document of the German federal parliaments"""
-
-    def __init__(self, dictionary):
-        self.btid = int(dictionary["id"])
-        if "herausgeber" in dictionary:
-            if dictionary["herausgeber"] == "BT":
-                self.publisher = "Bundestag"
-            elif dictionary["herausgeber"] == "BR":
-                self.publisher = "Bundesrat"
-            elif dictionary["herausgeber"] is not None and dictionary["herausgeber"] != "BR" and dictionary["herausgeber"] != "BT":
-                self.publisher = dictionary["herausgeber"]
-        else:
-            self.publisher = None
-        if "urheber" in dictionary:
-            self.originator = dictionary["urheber"]
-        else:
-            self.originator = None
-        if "autoren_anzahl" in dictionary:
-            self.author_nr = dictionary["autoren_anzahl"]
-        else:
-            self.author_nr = None
-        if "ressort" in dictionary:
-            self.author_nr = dictionary["ressort"]
-        else:
-            self.author_nr = None
-        if "datum" in dictionary:
-            self.date = dictionary["datum"]
-        else:
-            self.date = None
-        if "wahlperiode" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode"]
-        else:
-            self.legislativeperiod = None
-        if "titel" in dictionary:
-            self.title = dictionary["titel"]
-        else:
-            self.title = None
-        if "drucksachetyp" in dictionary:
-            self.doctype = dictionary["drucksachetyp"]
-        else:
-            self.doctype = None
-        if "fundstelle" in dictionary:
-            if "pdf_url" in dictionary["fundstelle"]:
-                self.pdf_url = dictionary["fundstelle"]["pdf_url"]
-            self.reference = dictionary["fundstelle"]
-        else:
-            self.reference = None
-        if "dokumentart" in dictionary:
-            self.docname = dictionary["dokumentart"]
-        else:
-            self.docname = None
-        if "typ" in dictionary:
-            self.instance = dictionary["typ"]
-        else:
-            self.instance = None
-        if "dokumentnummer" in dictionary:
-            self.docnumber = dictionary["dokumentnummer"]
-        else:
-            self.docnumber = None
-        if "autoren_anzeige" in dictionary:
-            auan = []
-            auanid = []
-            for a in dictionary["autoren_anzeige"]:
-                auan.append(a["titel"])
-                auanid.append(a["id"])
-            self.author = auan
-            self.authorid = auanid
-            self.authordisplay = dictionary["autoren_anzeige"]
-        else:
-            self.author = None
-            self.authordisplay = None
-        if "text" in dictionary:
-            self.text = dictionary["text"]
-        else:
-            self.text = None
-
-    def __str__(self):
-        return f'{self.instance}: ({self.btid}) {self.doctype} - {self.title} - {self.date}'
-
-    def __repr__(self):
-        return f'{self.instance}: ({self.btid}) {self.doctype} - {self.title} - {self.date}'
-
-    def get_authors(self, apikey):
-        pass
-
-
-class Aktivitaet:
-    """This class represents an activity in the German federal parliaments"""
-
-    def __init__(self, dictionary):
-        self.btid = dictionary["id"]
-        self.activitytype = dictionary["aktivitaetsart"]
-        self.date = dictionary["datum"]
-        self.title = dictionary["titel"]
-        self.type = dictionary["typ"]
-        self.doctype = dictionary["dokumentart"]
-        self.parlsession = dictionary["wahlperiode"]
-        self.numprocedure = dictionary["vorgangsbezug_anzahl"]
-        self.procedure_reference = dictionary["vorgangsbezug"][0]["id"]
-        self.document_reference = dictionary["fundstelle"]["id"]
-
-    def __str__(self):
-        return f'{self.instance}: ({self.btid}) {self.activitytype} - {self.title} - {self.date}'
-
-    def get_procedure(self, apikey):
-        data = self.query(apikey=apikey, resource="vorgang",
-                          fid=self.procedure_reference)
-        data = Vorgang(data[0])
-        return data
-
-    def get_document(self, apikey):
-        data = self.query(
-            apikey=apikey, resource="drucksache-text", fid=self.document_reference)
-        data = Drucksache(data[0])
+            raise ValueError("No valid method supplied.")
+    else:
+        raise ValueError("No method supplied")
+    if output_defined == True:
+        if output_format == "xlsx" or output_format == "xls":
+            import pandas as pd
+            data = pd.json_normalize(data)
+            data.to_excel(file_name, index=False)
+        elif output_format == "csv":
+            import pandas as pd
+            data = pd.json_normalize(data)
+            data.to_csv(file_name, index=False)
+        elif output_format == "json":
+            import json
+            with open(file_name, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+    else:
         return data
 
 
-class Vorgang:
-    """This class represents a legislative process in of the German federal parliaments"""
-
-    def __init__(self, dictionary):
-        self.btid = dictionary["id"]
-        self.process_positions = []
-        if "datum" in dictionary:
-            self.date = dictionary["datum"]
-        else:
-            self.date = None
-        if "titel" in dictionary:
-            self.title = dictionary["titel"]
-        else:
-            self.title = None
-        if "typ" in dictionary:
-            self.instance = dictionary["typ"]
-        else:
-            self.instance = None
-        if "vorgangstyp" in dictionary:
-            self.processtype = dictionary["vorgangstyp"]
-        else:
-            self.processtype = None
-        if "initiative" in dictionary:
-            self.initiativ = dictionary["initiative"]
-        else:
-            self.initiativ = None
-        if "abstract" in dictionary:
-            self.abstract = dictionary["abstract"]
-        else:
-            self.abstract = None
-        if "archiv" in dictionary:
-            self.archive = dictionary["archiv"]
-        else:
-            self.archive = None
-        if "beratungsstand" in dictionary:
-            self.status = dictionary["beratungsstand"]
-        else:
-            self.status = None
-        if "deskriptor" in dictionary:
-            self.descriptor = dictionary["deskriptor"]
-        else:
-            self.descriptor = None
-        if "gesta" in dictionary:
-            self.gesta = dictionary["gesta"]
-        else:
-            self.gesta = None
-        if "inkrafttreten" in dictionary:
-            self.effectivedate = dictionary["inkrafttreten"][0]["datum"]
-        else:
-            self.effectivedate = None
-        if "kom" in dictionary:
-            self.kom = dictionary["kom"]
-        else:
-            self.kom = None
-        if "mitteilung" in dictionary:
-            self.notification = dictionary["mitteilung"]
-        else:
-            self.notification = None
-        if "ratsdok" in dictionary:
-            self.eucouncilnr = dictionary["ratsdok"]
-        else:
-            self.eucouncilnr = None
-        if "sachgebiet" in dictionary:
-            self.subject = dictionary["sachgebiet"]
-        else:
-            self.subject = None
-        if "verkuendung" in dictionary:
-            self.announcement = dictionary["verkuendung"]
-        else:
-            self.announcement = None
-        if "wahlperiode" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode"]
-        else:
-            self.legislativeperiod = None
-        if "zustimmungsbeduerftigkeit" in dictionary:
-            self.approvalnecessary = dictionary["zustimmungsbeduerftigkeit"]
-            self.approvalnecessaryBool = dictionary["zustimmungsbeduerftigkeit"][len(
-                dictionary["zustimmungsbeduerftigkeit"])-1].split(",")[0]
-            if any("bes.eilbed." in s for s in dictionary["zustimmungsbeduerftigkeit"]):
-                self.urgency = True
-        else:
-            self.approvalnecessary = None
-            self.approvalnecessaryBool = None
-            self.urgency = None
-
-    def get_positions(self):
-        data = self.query("vorgangsposition", procedureID=self.btid)
-        for d in data:
-            self.process_positions.append(Vorgangsposition(d))
-
-    def show_positions(self):
-        for pp in self.process_positions:
-            print(pp)
-
-    def __str__(self):
-        return f'{self.instance}: ({self.btid}) {self.processtype} - {self.title} - {self.date}'
-
-    def __repr__(self):
-        return f'{self.instance}: ({self.btid}) {self.processtype} - {self.title} - {self.date}'
-
-
-class Vorgangsposition:
-    """This class represents a step in a legislative process in the German federal parliaments"""
-
-    def __init__(self, dictionary):
-        self.btid = dictionary["id"]
-        if "aktivitaet_anzeige" in dictionary:
-            pass
-        if "datum" in dictionary:
-            self.date = dictionary["datum"]
-        else:
-            self.date = None
-        if "dokumentart" in dictionary:
-            self.docname = dictionary["dokumentart"]
-        else:
-            self.docname = None
-        if "fortsetzung" in dictionary:
-            self.continuation = dictionary["fortsetzung"]
-        else:
-            self.continuation = None
-        if "gang" in dictionary:
-            self.course = dictionary["gang"]
-        else:
-            self.course = None
-        if "gang" in dictionary:
-            self.course = dictionary["gang"]
-        else:
-            self.course = None
-        if "nachtrag" in dictionary:
-            self.Supplement = dictionary["nachtrag"]
-        else:
-            self.Supplement = None
-        if "titel" in dictionary:
-            self.title = dictionary["titel"]
-        else:
-            self.title = None
-        if "typ" in dictionary:
-            self.instance = dictionary["typ"]
-        else:
-            self.instance = None
-        if "urheber" in dictionary:
-            self.originator = dictionary["urheber"]
-        else:
-            self.originator = None
-        if "vorgang_id" in dictionary:
-            self.procedureID = dictionary["vorgang_id"]
-        else:
-            self.procedureID = None
-        if "vorgangsposition" in dictionary:
-            self.processposition = dictionary["vorgangsposition"]
-        else:
-            self.processposition = None
-        if "vorgangstyp" in dictionary:
-            self.processtype = dictionary["vorgangstyp"]
-        else:
-            self.processtype = None
-        if "zuordnung" in dictionary:
-            if dictionary["zuordnung"] == "BT":
-                self.institution = "Bundestag"
-            elif dictionary["zuordnung"] == "BR":
-                self.institution = "Bundesrat"
-            elif dictionary["zuordnung"] is not None and dictionary["zuordnung"] != "BR" and dictionary["zuordnung"] != "BT":
-                self.institution = dictionary["zuordnung"]
-        else:
-            self.institution = None
-
-    def __str__(self):
-        return f'{self.instance}: ({self.procedureID}) {self.processtype} - {self.title} - {self.date}'
-
-    def __repr__(self):
-        pass
-
-
-class Plenarprotokoll:
-    """This class represents a plenary protocol of the German federal parliaments"""
-
-    def __init__(self, dictionary):
-        self.btid = dictionary["id"]
-        if "datum" in dictionary:
-            self.date = dictionary["datum"]
-        else:
-            self.date = None
-        if "dokumentart" in dictionary:
-            self.docname = dictionary["dokumentart"]
-        else:
-            self.docname = None
-        if "titel" in dictionary:
-            self.title = dictionary["titel"]
-        else:
-            self.title = None
-        if "typ" in dictionary:
-            self.instance = dictionary["typ"]
-        else:
-            self.instance = None
-        if "herausgeber" in dictionary:
-            if dictionary["herausgeber"] == "BT":
-                self.publisher = "Bundestag"
-            elif dictionary["herausgeber"] == "BR":
-                self.publisher = "Bundesrat"
-            elif dictionary["herausgeber"] is not None and dictionary["herausgeber"] != "BR" and dictionary["herausgeber"] != "BT":
-                self.publisher = dictionary["herausgeber"]
-        else:
-            self.publisher = None
-        if "wahlperiode" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode"]
-        else:
-            self.legislativeperiod = None
-        if "text" in dictionary:
-            self.text = dictionary["text"]
-        else:
-            self.text = None
-        if "fundstelle" in dictionary:
-            if "pdf_url" in dictionary["fundstelle"]:
-                self.pdf_url = dictionary["fundstelle"]["pdf_url"]
-            self.reference = dictionary["fundstelle"]
-        else:
-            self.reference = None
-        if "sitzungsbemerkung" in dictionary:
-            self.sessioncomment = dictionary["sitzungsbemerkung"]
-        else:
-            self.sessioncomment = None
-        if "dokumentnummer" in dictionary:
-            self.docnumber = dictionary["dokumentnummer"]
-        else:
-            self.docnumber = None
-
-    def __str__(self):
-        return f'{self.docname}: {self.docnumber} - {self.title} - {self.date}'
-
-    def __repr__(self):
-        pass
+if __name__ == "__main__":
+    main_function()

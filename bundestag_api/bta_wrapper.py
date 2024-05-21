@@ -131,13 +131,13 @@ class btaConnection:
                 be supplied as a list but they will be joined via AND. An OR-
                 search is not possible
             sachgebiet: str/list, optional
-                Political field that is connected to the entities. Multiple 
+                Political field that is connected to the entities. Multiple
                 strings can be supplied as a list but they will be joined via
                 AND. An OR-search is not possible
             document_type: str, optional
                 The type of document to be returned.
             title: str/list, optional
-                Keyword that can be found in the title of documents. Multiple 
+                Keyword that can be found in the title of documents. Multiple
                 strings can be supplied as a list and will be joined via
                 an OR-search.
         """
@@ -380,15 +380,15 @@ class btaConnection:
         descriptor: str/list, optional
             Keyword that is connected to the entities. Multiple strings can
             be supplied as a list but they will be joined via AND. An OR-
-            search is not possible         
+            search is not possible
         sachgebiet: str/list, optional
-            Political field that is connected to the entities. Multiple 
+            Political field that is connected to the entities. Multiple
             strings can be supplied as a list but they will be joined via
             AND. An OR-search is not possible
         document_type: str, optional
             The type of document to be returned.
         title: str/list, optional
-            Keyword that can be found in the title of documents. Multiple 
+            Keyword that can be found in the title of documents. Multiple
             strings can be supplied as a list and will be joined via
             an OR-search.
 
@@ -487,7 +487,7 @@ class btaConnection:
         document_type: str, optional
             The type of document to be returned.
         title: str/list, optional
-            Keyword that can be found in the title of documents. Multiple 
+            Keyword that can be found in the title of documents. Multiple
             strings can be supplied as a list and will be joined via
             an OR-search.
 
@@ -593,7 +593,7 @@ class btaConnection:
         document_type: str, optional
             The type of document to be returned.
         title: str/list, optional
-            Keyword that can be found in the title of documents. Multiple 
+            Keyword that can be found in the title of documents. Multiple
             strings can be supplied as a list and will be joined via
             an OR-search.
 
@@ -638,7 +638,7 @@ class btaConnection:
             yet. Other option is "object" which will return results as class
             objects
         fulltext: boolean
-            Whether the fulltext (if available) should be requested or not. Default is False    
+            Whether the fulltext (if available) should be requested or not. Default is False
 
         Returns
         -------
@@ -722,10 +722,10 @@ class btaConnection:
 
 
     def search_plenaryprotocol_meta(self,
-                               rformat="json",
+                               return_format="json",
                                num=100,
-                               datestart=None,
-                               dateend=None,
+                               date_start=None,
+                               date_end=None,
                                institution=None):
         """
         Searches plenary protocols specified by the parameters, metadata.
@@ -754,9 +754,9 @@ class btaConnection:
         """
 
         data = self.query(resource="plenarprotokoll",
-                          rformat=rformat,
-                          datestart=datestart,
-                          dateend=dateend,
+                          return_format=return_format,
+                          date_start=date_start,
+                          date_end=date_end,
                           institution=institution,
                           num=num,)
 
@@ -923,7 +923,7 @@ class btaConnection:
         descriptor: str/list, optional
             Keyword that is connected to the entities. Multiple strings can
             be supplied as a list but they will be joined via AND. An OR-
-            search is not possible         
+            search is not possible
 
         Returns
         -------
@@ -1002,7 +1002,7 @@ class btaConnection:
                            "search_plenaryprotocol", "get_document",
                            "search_document", "get_procedureposition",
                            "search_procedureposition", "get_procedure",
-                           "search_procedure", "query"] 
+                           "search_procedure", "query"]
         """
         return list_of_methods
 

@@ -288,7 +288,7 @@ class btaConnection:
             if r.status_code == requests.codes.ok:
                 content = r.json()
                 if content["numFound"] == 0:
-                    # print("No data was returned.")
+                    logging.info("No data was returned.")
                     data = "No data was returned."
                     prs = False
                 elif content["numFound"] > 0 and content["numFound"] <= 50:
@@ -407,7 +407,9 @@ class btaConnection:
                           updated_since=updated_since,
                           updated_until=updated_until,
                           descriptor=descriptor,
-                          sachgebiet=sachgebiet,)
+                          sachgebiet=sachgebiet,
+                          document_type=document_type,
+                          title=title)
         return data
 
     def get_procedure(self,
@@ -504,7 +506,9 @@ class btaConnection:
                           date_end=date_end,
                           num=num,
                           updated_since=updated_since,
-                          updated_until=updated_until,)
+                          updated_until=updated_until,,
+                          document_type=document_type,
+                          title=title)
         return data
 
     def get_procedureposition(self,
@@ -618,7 +622,9 @@ class btaConnection:
                           institution=institution,
                           num=num,
                           updated_since=updated_since,
-                          updated_until=updated_until,)
+                          updated_until=updated_until,
+                          document_type=document_type,
+                          title=title)
         return data
 
     def get_document(self,
@@ -925,61 +931,4 @@ class btaConnection:
         """
         list_of_methods = dir(btaConnection)
         list_of_methods = [item for item in list_of_methods if "__" not in item]
-        """
-        list_of_methods = ["get_activity","search_activity","get_person",
-                           "search_person", "get_plenaryprotocol",
-                           "search_plenaryprotocol", "get_document",
-                           "search_document", "get_procedureposition",
-                           "search_procedureposition", "get_procedure",
-                           "search_procedure", "query"] 
-        """
         return list_of_methods
-
-
-def main_function():
-    arguments = parse_args_to_dict(sys.argv[1:])
-    if arguments.get("o") is not None:
-        output_format = arguments.get("o")
-        output_defined = True
-        arguments.pop("o")
-        if arguments.get("n") is not None:
-            file_name = arguments.get("n")
-            if output_format not in file_name:
-                file_name = file_name+"."+output_format
-            arguments.pop("n")
-        else:
-            raise ValueError("Output defined but no filename given.")
-    if arguments.get("apikey") is not None:
-        bta = btaConnection(apikey=arguments.get("apikey"))
-        arguments.pop("apikey")
-    else:
-        bta = btaConnection()
-    if arguments.get("method") is not None:
-        if arguments.get("method") in bta.list_methods():
-            method = arguments.get("method")
-            arguments.pop("method")
-            if method == "searchProcedure":
-                data = bta.search_procedure(arguments)
-        else:
-            raise ValueError("No valid method supplied.")
-    else:
-        raise ValueError("No method supplied")
-    if output_defined == True:
-        if output_format == "xlsx" or output_format == "xls":
-            import pandas as pd
-            data = pd.json_normalize(data)
-            data.to_excel(file_name, index=False)
-        elif output_format == "csv":
-            import pandas as pd
-            data = pd.json_normalize(data)
-            data.to_csv(file_name, index=False)
-        elif output_format == "json":
-            import json
-            with open(file_name, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=4)
-    else:
-        return data
-
-
-if __name__ == "__main__":
-    main_function()

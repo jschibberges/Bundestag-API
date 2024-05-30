@@ -1,12 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Created on Fri Mar  1 22:45:35 2024
-
-@author: jschi
-"""
-
-# Classes
-
 
 class Person:
     """This class represents a German parliamentarian"""

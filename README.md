@@ -1,3 +1,5 @@
+[![Upload Python Package](https://github.com/jschibberges/Bundestag-API/actions/workflows/python-publish.yml/badge.svg)](https://github.com/jschibberges/Bundestag-API/actions/workflows/python-publish.yml)
+
 # Bundestag-API
 A wrapper for the official Bundestag (German Federal Parliament) API in Python. It aim is to make querying the API a little easier in Python and relieve you from writing a lot of boilerplate code. 
 

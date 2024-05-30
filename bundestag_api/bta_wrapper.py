@@ -44,10 +44,11 @@ class btaConnection:
         Retrieves plenary protocols specified by IDs
     """
 
-    def __init__(self, apikey=None):
-        GEN_APIKEY = "rgsaY4U.oZRQKUHdJhF9qguHMkwCGIoLaqEcaHjYLF"
 
-        DATE_GEN_APIKEY = "31.05.2024"
+    def __init__(self, apikey=None):
+        GEN_APIKEY = "I9FKdCn.hbfefNWCY336dL6x62vfwNKpoN2RZ1gp21"
+
+        DATE_GEN_APIKEY = "31.05.2025"
         date_expiry = datetime.strptime(DATE_GEN_APIKEY, "%d.%m.%Y")
 
         today = datetime.now()

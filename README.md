@@ -12,7 +12,7 @@ The official information on the API can be found here: [Bundestag.de](https://di
 ### Pip install (recommended)
 
 ```
-$ pip3 install bundestag_api
+$ pip install bundestag_api
 ```
 
 ### Install from source
@@ -27,7 +27,7 @@ $ pip install -r requirements.txt
 The API requires a key to authenticate requests. Personal key can be requested from the [Bundestag administration](mailto:parlamentsdokumentation@bundestag.de). However a general API key has been published that is valid until May 31st 2024. This key is automatically used until that date when no other key is supplied by the user.
 
 ## Usage
-To save your API key create a connection-object, that you can then pass to the search functions. It will save you time, should you have to change API keys at a later date. If you don't supply an API key, the official API key will be used until 31st of May 2024. 
+To save your API key create a connection-object, that you can then pass to the search functions. It will save you time, should you have to change API keys at a later date. If you don't supply an API key, the official API key will be used until 31st of May 2025. 
 ```
 import bundestag_api
 bta = bundestag_api.btaConnection() #if you want to use your own API key, supply it via "apikey="XXX")

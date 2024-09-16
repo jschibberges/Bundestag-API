@@ -506,7 +506,7 @@ class btaConnection:
                           date_end=date_end,
                           num=num,
                           updated_since=updated_since,
-                          updated_until=updated_until,,
+                          updated_until=updated_until,
                           document_type=document_type,
                           title=title)
         return data

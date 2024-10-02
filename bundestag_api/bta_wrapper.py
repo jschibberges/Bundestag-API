@@ -3,8 +3,8 @@ from datetime import datetime
 import requests
 import sys
 import logging
-from models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, Plenarprotokoll
-from utils import is_iso8601, parse_args_to_dict
+from .models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, Plenarprotokoll
+from .utils import is_iso8601, parse_args_to_dict
 
 logger = logging.getLogger("bundestag_api")
 logger.addHandler(logging.NullHandler())

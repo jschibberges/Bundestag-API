@@ -3,8 +3,8 @@ from datetime import datetime
 import requests
 import sys
 import logging
-from models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, Plenarprotokoll
-from utils import is_iso8601, parse_args_to_dict
+from .models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, Plenarprotokoll
+from .utils import is_iso8601, parse_args_to_dict
 
 logger = logging.getLogger("bundestag_api")
 logger.addHandler(logging.NullHandler())
@@ -16,11 +16,11 @@ class btaConnection:
     Methods
     -------
     query(resource, return_format="json", num=100, fid=None, date_start=None, date_end=None,
-          institution=None, documentID=None, plenaryprotocolID=None, procedureID=None)
+          institution=None, documentID=None, plenaryprotocolID=None, processID=None)
         A general search function for the official Bundestag API
     search_procedure(return_format="json",num=100,fid=None,date_start=None,date_end=None):
         Searches procedures specified by the parameters
-    search_procedureposition(return_format="json", num=100, fid=None, date_start=None, date_end=None, procedureID=None):
+    search_procedureposition(return_format="json", num=100, fid=None, date_start=None, date_end=None, processID=None):
         Searches procedure positions specified by the parameters
     search_document(return_format="json", num=100, fid=None, date_start=None, date_end=None,institution=None):
         Searches documents specified by the parameters
@@ -43,7 +43,6 @@ class btaConnection:
     get_plenaryprotocol(btid, return_format="json"):
         Retrieves plenary protocols specified by IDs
     """
-
 
     def __init__(self, apikey=None):
         GEN_APIKEY = "I9FKdCn.hbfefNWCY336dL6x62vfwNKpoN2RZ1gp21"
@@ -82,10 +81,12 @@ class btaConnection:
               institution=None,
               documentID=None,
               plenaryprotocolID=None,
-              procedureID=None,
+              processID=None,
               descriptor=None,
               sachgebiet=None,
               document_type=None,
+              process_type=None,
+              procces_type_notation=None,
               title=None,):
         """A general search function for the official Bundestag API
 
@@ -123,7 +124,7 @@ class btaConnection:
                 Entity ID of a plenary protocol. Can be used to select activities,
                 procedures and procedure positions that are connected to the
                 protocol
-            procedureID: int, optional
+            processID: int, optional
                 Entity ID of a process. Can be used to select procedure positions
                 that are connected to the process
             descriptor: str/list, optional
@@ -136,6 +137,10 @@ class btaConnection:
                 AND. An OR-search is not possible
             document_type: str, optional
                 The type of document to be returned.
+            process_type: str, optional
+                The type of process ("Gesetzgebung") to be returned.
+            process_type_notation: str, optional
+                The type of process ("Gesetzgebung") to be returned.
             title: str/list, optional
                 Keyword that can be found in the title of documents. Multiple 
                 strings can be supplied as a list and will be joined via
@@ -183,12 +188,12 @@ class btaConnection:
             if plenaryprotocolID is not None and not isinstance(plenaryprotocolID, int):
                 raise ValueError("plenaryprotocolID must be an integer")
         if resource not in ["vorgangsposition"]:
-            if procedureID is not None:
+            if processID is not None:
                 raise ValueError(
-                    "procedureID must be combined with resource 'vorgangsposition'")
+                    "processID must be combined with resource 'vorgangsposition'")
         elif resource in ["vorgangsposition"]:
-            if procedureID is not None and not isinstance(procedureID, int):
-                raise ValueError("procedureID must be an integer")
+            if processID is not None and not isinstance(processID, int):
+                raise ValueError("processID must be an integer")
         if resource in ["drucksache", "drucksache-text", "vorgang", "vorgangsposition"]:
             if title is not None:
                 if isinstance(title, list) is True:
@@ -206,6 +211,9 @@ class btaConnection:
             if document_type is not None:
                 if isinstance(document_type, str) is False:
                     raise ValueError("document_type must be a string.")
+            if process_type is not None:
+                if isinstance(process_type, str) is False:
+                    raise ValueError("process_type must be a string.")
         if resource not in ["drucksache", "drucksache-text", "vorgang", "vorgangsposition"]:
             if title is not None:
                 raise ValueError("Title must be combined with a document of process")
@@ -213,10 +221,10 @@ class btaConnection:
                 raise ValueError("Document type must be combined with a document")
         # Validate that only one of the possible IDs is given and raise an error otherwise
         non_none_count = sum(arg is not None for arg in [
-                             plenaryprotocolID, documentID, procedureID])
+                             plenaryprotocolID, documentID, processID])
         if non_none_count > 1:
             raise ValueError(
-                "Can't select more than one of documentID, plenaryprotocolID and procedureID")
+                "Can't select more than one of documentID, plenaryprotocolID and processID")
         # Validate the num parameter is an integer and positive
         if not isinstance(num, int) or num <= 0:
             raise ValueError("num must be an integer larger than zero")
@@ -273,11 +281,13 @@ class btaConnection:
                    "f.aktualisiert.end": updated_until,
                    "f.drucksache": documentID,
                    "f.plenarprotokoll": plenaryprotocolID,
-                   "f.vorgang": procedureID,
+                   "f.vorgang": processID,
                    "f.zuordnung": institution,
                    "f.deskriptor": descriptor,
                    "f.sachgebiet": sachgebiet,
                    "f.drucksachetyp": document_type,
+                   "f.vorgangstyp": process_type,
+                   "f.vorgangstyp_notation": procces_type_notation,
                    "f.titel": title,
                    "cursor": None}
         data = []
@@ -352,6 +362,7 @@ class btaConnection:
                          descriptor=None,
                          sachgebiet=None,
                          document_type=None,
+                         process_type=None,
                          title=None,):
         """
         Searches procedures specified by the parameters
@@ -387,6 +398,8 @@ class btaConnection:
             AND. An OR-search is not possible
         document_type: str, optional
             The type of document to be returned.
+        process_type: str, optional
+            The type of process ("Gesetzgebung") to be returned.
         title: str/list, optional
             Keyword that can be found in the title of documents. Multiple 
             strings can be supplied as a list and will be joined via
@@ -409,6 +422,7 @@ class btaConnection:
                           descriptor=descriptor,
                           sachgebiet=sachgebiet,
                           document_type=document_type,
+                          process_type=process_type,
                           title=title)
         return data
 
@@ -461,6 +475,7 @@ class btaConnection:
                                  updated_since=None,
                                  updated_until=None,
                                  document_type=None,
+                                 processID=None,
                                  title=None,):
         """
         Searches procedure positions specified by the parameters
@@ -506,8 +521,9 @@ class btaConnection:
                           date_end=date_end,
                           num=num,
                           updated_since=updated_since,
-                          updated_until=updated_until,,
+                          updated_until=updated_until,
                           document_type=document_type,
+                          processID=processID,
                           title=title)
         return data
 
@@ -515,7 +531,7 @@ class btaConnection:
                               btid,
                               return_format="json",
                               documentID=None,
-                              procedureID=None,
+                              processID=None,
                               plenaryprotocolID=None):
         """
         Retrieves procedure positions specified by IDs
@@ -531,7 +547,7 @@ class btaConnection:
             objects
         documentID: int, optional
             Returns procedure positions related to that documentID
-        procedureID: int, optional
+        processID: int, optional
             Returns procedure positions related to that procedure
         plenaryprotocolID: int, optional
             Entity ID of a plenary protocol. Can be used to select activities,
@@ -543,7 +559,7 @@ class btaConnection:
         data: list
             a list of dictionaries or class objects of procedure positions
         """
-        if btid is None and documentID is None and procedureID is None:
+        if btid is None and documentID is None and processID is None:
             raise ValueError(
                 "Either an procedure ID, document ID or procedure ID must be supplied")
         else:
@@ -551,7 +567,7 @@ class btaConnection:
                               fid=btid,
                               return_format=return_format,
                               documentID=documentID,
-                              procedureID=procedureID,
+                              processID=processID,
                               plenaryprotocolID=plenaryprotocolID)
             return data
 

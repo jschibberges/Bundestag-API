@@ -45,9 +45,9 @@ class btaConnection:
     """
 
     def __init__(self, apikey=None):
-        GEN_APIKEY = "I9FKdCn.hbfefNWCY336dL6x62vfwNKpoN2RZ1gp21"
+        GEN_APIKEY = "OSOegLs.PR2lwJ1dwCeje9vTj7FPOt3hvpYKtwKkhw"
 
-        DATE_GEN_APIKEY = "31.05.2025"
+        DATE_GEN_APIKEY = "31.05.2026"
         date_expiry = datetime.strptime(DATE_GEN_APIKEY, "%d.%m.%Y")
 
         today = datetime.now()

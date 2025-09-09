@@ -1,34 +1,41 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime
 import requests
-import sys
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 import logging
+from typing import Any, Dict, Iterable, List, Optional, Union, Literal, cast
 from .models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, Plenarprotokoll
-from .utils import is_iso8601, parse_args_to_dict
+from .utils import to_iso8601
 
 logger = logging.getLogger("bundestag_api")
 logger.addHandler(logging.NullHandler())
 
+ReturnFormat = Literal["json", "object", "pandas"]
+Institution = Literal["BT", "BR", "BV", "EK"]
+Resource = Literal["aktivitaet", "drucksache", "drucksache-text", "person", 
+                   "plenarprotokoll", "plenarprotokoll-text", "vorgang", 
+                   "vorgangsposition"]
 
 class btaConnection:
     """This class handles the API authentication and provides search functionality
 
     Methods
     -------
-    query(resource, return_format="json", num=100, fid=None, date_start=None, date_end=None,
+    query(resource, return_format="json", limit=100, fid=None, date_start=None, date_end=None,
           institution=None, documentID=None, plenaryprotocolID=None, processID=None)
         A general search function for the official Bundestag API
-    search_procedure(return_format="json",num=100,fid=None,date_start=None,date_end=None):
+    search_procedure(return_format="json",limit=100,fid=None,date_start=None,date_end=None):
         Searches procedures specified by the parameters
-    search_procedureposition(return_format="json", num=100, fid=None, date_start=None, date_end=None, processID=None):
+    search_procedureposition(return_format="json", limit=100, fid=None, date_start=None, date_end=None, processID=None):
         Searches procedure positions specified by the parameters
-    search_document(return_format="json", num=100, fid=None, date_start=None, date_end=None,institution=None):
+    search_document(return_format="json", limit=100, fid=None, date_start=None, date_end=None,institution=None):
         Searches documents specified by the parameters
-    search_person(return_format="json", num=100, fid=None):
+    search_person(return_format="json", limit=100, fid=None):
         Searches persons specified by the parameters
-    search_plenaryprotocol(return_format="json", num=100, fid=None, date_start=None, date_end=None, institution=None):
+    search_plenaryprotocol(return_format="json", limit=100, fid=None, date_start=None, date_end=None, institution=None):
         Searches plenary protocols specified by the parameters
-    search_activity(return_format="json", num=100, fid=None, date_start=None, date_end=None, documentID=None, plenaryprotocolID=None, institution=None):
+    search_activity(return_format="json", limit=100, fid=None, date_start=None, date_end=None, documentID=None, plenaryprotocolID=None, institution=None):
         Searches activities specified by the parameters
     get_activity(btid, return_format="json"):
         Retrieves activities specified by IDs
@@ -55,13 +62,17 @@ class btaConnection:
             logger.error("You need to supply your own API key.")
         elif apikey is None and date_expiry.date() > today.date():
             self.apikey = GEN_APIKEY
-            logger.info("General API key used. It is valid until 31.05.2024.")
+            logger.info("General API key used. It is valid until 31.05.2026.")
         elif apikey is not None:
-            if not isinstance(apikey, str) and len(apikey) == 42:
-                raise ValueError("No (correct) API key provided")
+            if not isinstance(apikey, str):
+                raise ValueError("API key needs to be a string.")
+            elif len(apikey.strip()) < 16:  # minimal guard against obviously wrong keys
+                raise ValueError("apikey looks malformed (too short).")
             else:
                 self.apikey = apikey
                 logger.debug("Personal API key is used.")
+        self.session = self._build_session()
+
 
     def __str__(self):
         return "API key: "+str(self.apikey)
@@ -69,25 +80,37 @@ class btaConnection:
     def __repr__(self):
         return "API key: "+str(self.apikey)
 
+    def _build_session(self):
+        s = requests.Session()
+        retry = Retry(total=3,
+                       status_forcelist=(429,500,502,503,504),
+                       allowed_methods=frozenset(['GET']), 
+                       backoff_factor=0.5)
+        adapter = HTTPAdapter(max_retries=retry)
+        s.mount('https://', adapter)
+        s.mount('http://', adapter)
+        s.headers['User-Agent'] = 'bundestag_api (python)'
+        return s
+
     def query(self,
-              resource,
-              return_format="json",
-              num=100,
-              fid=None,
-              date_start=None,
-              date_end=None,
-              updated_since=None,
-              updated_until=None,
-              institution=None,
-              documentID=None,
-              plenaryprotocolID=None,
-              processID=None,
-              descriptor=None,
-              sachgebiet=None,
-              document_type=None,
-              process_type=None,
-              procces_type_notation=None,
-              title=None,):
+              resource: Resource,
+              return_format: ReturnFormat ="json",
+              limit: int = 100,
+              fid: Optional[Union[int, List[int]]] = None,
+              date_start: Optional[str] = None,
+              date_end: Optional[str] = None,
+              updated_since: Optional[str] = None,
+              updated_until: Optional[str] = None,
+              institution: Optional[Institution] = None,
+              documentID: Optional[int] = None,
+              plenaryprotocolID: Optional[int] = None,
+              processID: Optional[int] = None,
+              descriptor: Optional[Union[str, List[str]]] = None,
+              sachgebiet: Optional[Union[str, List[str]]] = None,
+              document_type: Optional[str] = None,
+              process_type: Optional[str] = None,
+              process_type_notation: Optional[int] = None,
+              title: Optional[Union[str, List[str]]] = None,):
         """A general search function for the official Bundestag API
 
         Parameters
@@ -100,7 +123,7 @@ class btaConnection:
                 Return format of the data. Defaults to json. XML not implemented
                 yet. Other option is "object" which will return results as class
                 objects
-            num: int, optional
+            limit: int, optional
                 Number of maximal results to be returned. Defaults to 100
             fid: int/list, optional
                 ID of an entity. Can be a list to retrieve more than one entity
@@ -139,8 +162,8 @@ class btaConnection:
                 The type of document to be returned.
             process_type: str, optional
                 The type of process ("Gesetzgebung") to be returned.
-            process_type_notation: str, optional
-                The type of process ("Gesetzgebung") to be returned.
+            process_type_notation: int, optional
+                The type of process (100) to be returned.
             title: str/list, optional
                 Keyword that can be found in the title of documents. Multiple 
                 strings can be supplied as a list and will be joined via
@@ -152,25 +175,23 @@ class btaConnection:
                          "plenarprotokoll", "plenarprotokoll-text", "vorgang",
                          "vorgangsposition"]
         INSTITUTIONS = ["BT", "BR", "BV", "EK"]
-        if isinstance(resource, str) is True:
-            resource = resource.lower()
-        if resource not in RESOURCETYPES:
+        # Validate resource
+        if resource not in Resource.__args__:
             raise ValueError("No or wrong resource")
         # Validate fid
-        if isinstance(fid, list) is True:
+        if fid is not None:
+            if isinstance(fid, int):
+                fid = [fid]
+            if not isinstance(fid, list):
+                raise Exception("fid must be int or a list of ints.")
             if all(isinstance(item, int) for item in fid) is False:
                 try:
                     fid = [int(item) for item in fid]
                 except ValueError as e:
                     raise Exception("IDs must be integers: {}".format(e)) from None
-            else:
-                fid = '&f.id='.join(map(str, fid))
-        elif fid is not None:
-            if not isinstance(fid, int):
-                try:
-                    fid = int(fid)
-                except ValueError as e:
-                    raise Exception("IDs must be integers: {}".format(e)) from None
+            fid_str = ''.join(f'&f.id={str(item)}' for item in fid)
+        else:
+            fid_str = None
         if return_format not in ["json", "xml", "object", "pandas"]:
             raise ValueError("return_format: Not a correct format!")
         if institution is not None and institution not in INSTITUTIONS:
@@ -196,27 +217,30 @@ class btaConnection:
                 raise ValueError("processID must be an integer")
         if resource in ["drucksache", "drucksache-text", "vorgang", "vorgangsposition"]:
             if title is not None:
-                if isinstance(title, list) is True:
-                    if all(isinstance(item, str) for item in title) is False:
-                        raise ValueError("All sachgebiet items need to be of type string.")
-                    elif all(len(item) < 100 for item in title) is False:
+                if isinstance(title, str):
+                    title = [title]
+                if not isinstance(title, list):
+                    raise ValueError("title must be string or a list of strings.")
+                if all(isinstance(item, str) for item in title) is False:
+                    try:
+                        title = [str(item) for item in title]
+                    except ValueError as e:
+                        raise ValueError("All title items need to be of type string.")
+                if all(len(item) < 100 for item in title) is False:
                         raise ValueError("Strings are over 100 characters in length.")
-                    else:
-                        title = '&f.sachgebiet='.join(map(str, title))
-                elif isinstance(title, str) is True:
-                    if len(title) < 100:
-                        raise ValueError("String is over 100 characters in length.")
-                else:
-                    raise ValueError("Sachgebiet must be string or a list of strings.")
+                title = ''.join(f'&f.titel={str(item)}' for item in title)
             if document_type is not None:
                 if isinstance(document_type, str) is False:
                     raise ValueError("document_type must be a string.")
             if process_type is not None:
                 if isinstance(process_type, str) is False:
                     raise ValueError("process_type must be a string.")
+            if process_type_notation is not None:
+                if isinstance(process_type_notation, int) is False:
+                    raise ValueError("process_type_notation must be an integer.")
         if resource not in ["drucksache", "drucksache-text", "vorgang", "vorgangsposition"]:
             if title is not None:
-                raise ValueError("Title must be combined with a document of process")
+                raise ValueError("Title must be combined with a document or process")
             if document_type is not None:
                 raise ValueError("Document type must be combined with a document")
         # Validate that only one of the possible IDs is given and raise an error otherwise
@@ -225,46 +249,44 @@ class btaConnection:
         if non_none_count > 1:
             raise ValueError(
                 "Can't select more than one of documentID, plenaryprotocolID and processID")
-        # Validate the num parameter is an integer and positive
-        if not isinstance(num, int) or num <= 0:
-            raise ValueError("num must be an integer larger than zero")
+        # Validate the limit parameter is an integer and positive
+        if not isinstance(limit, int) or limit <= 0:
+            raise ValueError("limit must be an integer larger than zero")
         # Validate updated_since and updated_until are both in ISO 8601 format
         if updated_since is not None:
-            if is_iso8601(updated_since) != True:
-                raise ValueError(
-                    "updated_since must be a string in the following format '2022-06-24T09:45:00'")
+            updated_since = to_iso8601(updated_since)
         if updated_until is not None:
-            if is_iso8601(updated_until) != True:
-                raise ValueError(
-                    "updated_until must be a string in the following format '2022-06-24T09:45:00'")
+            updated_until = to_iso8601(updated_until)
         # Validate descriptors
         if descriptor is not None:
-            if isinstance(descriptor, list) is True:
-                if all(isinstance(item, str) for item in descriptor) is False:
-                    raise ValueError("All descriptor items need to be of type string.")
-                elif all(len(item) < 100 for item in descriptor) is False:
-                    raise ValueError("Strings are over 100 characters in length.")
-                else:
-                    descriptor = '&f.deskriptor='.join(map(str, descriptor))
-            elif isinstance(descriptor, str) is True:
-                if len(descriptor) < 100:
-                    raise ValueError("String is over 100 characters in length.")
-            else:
+            if isinstance(descriptor, str):
+                descriptor = [descriptor]
+            if not isinstance(descriptor, list):
                 raise ValueError("Descriptor must be string or a list of strings.")
+
+            if all(isinstance(item, str) for item in descriptor) is False:
+                try:
+                    descriptor = [str(item) for item in descriptor]
+                except ValueError as e:
+                    raise ValueError("All descriptor items need to be of type string.")
+            if all(len(item) < 100 for item in descriptor) is False:
+                raise ValueError("There are descriptor strings that are over 100 characters in length.")
+            descriptor = ''.join(f'&f.deskriptor={str(item)}' for item in descriptor)
         # Validate sachgebiet
         if sachgebiet is not None:
-            if isinstance(sachgebiet, list) is True:
-                if all(isinstance(item, str) for item in sachgebiet) is False:
-                    raise ValueError("All sachgebiet items need to be of type string.")
-                elif all(len(item) < 100 for item in sachgebiet) is False:
-                    raise ValueError("Strings are over 100 characters in length.")
-                else:
-                    sachgebiet = '&f.sachgebiet='.join(map(str, sachgebiet))
-            elif isinstance(sachgebiet, str) is True:
-                if len(sachgebiet) < 100:
-                    raise ValueError("String is over 100 characters in length.")
-            else:
+            if isinstance(sachgebiet, str):
+                sachgebiet = [sachgebiet]
+            if not isinstance(sachgebiet, list):
                 raise ValueError("Sachgebiet must be string or a list of strings.")
+            if all(isinstance(item, str) for item in sachgebiet) is False:
+                try:
+                    sachgebiet = [str(item) for item in sachgebiet]
+                except ValueError as e:
+                    raise ValueError("All sachgebiet items need to be of type string.")
+            if all(len(item) < 100 for item in sachgebiet) is False:
+                raise ValueError("There are sachgebiet strings that are over 100 characters in length.")
+            sachgebiet = ''.join(f'&f.sachgebiet={str(item)}' for item in sachgebiet)
+            
 
         r_url = BASE_URL+resource
         return_object = False
@@ -274,7 +296,7 @@ class btaConnection:
 
         payload = {"apikey": self.apikey,
                    "format": return_format,
-                   "f.id": fid,
+                   "f.id": fid_str,
                    "f.datum.start": date_start,
                    "f.datum.end": date_end,
                    "f.aktualisiert.start": updated_since,
@@ -287,29 +309,28 @@ class btaConnection:
                    "f.sachgebiet": sachgebiet,
                    "f.drucksachetyp": document_type,
                    "f.vorgangstyp": process_type,
-                   "f.vorgangstyp_notation": procces_type_notation,
+                   "f.vorgangstyp_notation": process_type_notation,
                    "f.titel": title,
                    "cursor": None}
         data = []
         prs = True
         while prs is True:
-            r = requests.get(r_url, params=payload)
+            r = self.session.get(r_url, params=payload, timeout=30)
             logger.debug(r.url)
             if r.status_code == requests.codes.ok:
                 content = r.json()
                 if content["numFound"] == 0:
                     logging.info("No data was returned.")
-                    data = "No data was returned."
                     prs = False
-                elif content["numFound"] > 0 and content["numFound"] <= 50:
+                elif content["numFound"] > 0 and content["numFound"] <= limit:
                     data.extend(content["documents"])
                     prs = False
-                elif content["numFound"] > 50:
+                elif content["numFound"] > limit:
                     if payload["cursor"] == content["cursor"]:
                         prs = False
                     data.extend(content["documents"])
-                    if num is not None and len(data) >= num:
-                        data = data[0:num]
+                    if limit is not None and len(data) >= limit:
+                        data = data[0:limit]
                         prs = False
                     payload["cursor"] = content["cursor"]
             elif r.status_code == 400:
@@ -344,26 +365,22 @@ class btaConnection:
         if return_format == "pandas":
             import pandas as pd
             data = pd.json_normalize(data)
-        if len(data) == 1 and isinstance(data, dict):
-            tl = list(data.keys())
-            data = data[tl[0]]
-        elif len(data) == 1 and isinstance(data, list):
-            data = data[0]
+        # Always return a list, even if it is just one element
+        if not isinstance(data, list):
+            data = [data]
         return data
 
-    def search_procedure(self,
-                         return_format="json",
-                         num=100,
-                         fid=None,
-                         date_start=None,
-                         date_end=None,
-                         updated_since=None,
-                         updated_until=None,
-                         descriptor=None,
-                         sachgebiet=None,
-                         document_type=None,
-                         process_type=None,
-                         title=None,):
+    # The following two methods are used to construct the specific search and get methods
+    def _search(self, resource: Resource, **filters):
+        """Generic search: forwards to .query(resource, **filters)."""
+        return self.query(resource=resource, **filters)
+
+    def _get(self, resource: Resource, btid, **filters):
+        """Generic get: forwards to .query(resource, fid=btid, **filters)."""
+        return self.query(resource=resource, fid=btid, **filters)
+
+    # procedures
+    def search_procedure(self, **filters) -> list:
         """
         Searches procedures specified by the parameters
 
@@ -373,7 +390,7 @@ class btaConnection:
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
-        num: int, optional
+        limit: int, optional
             Number of maximal results to be returned. Defaults to 100
         fid: int/list, optional
             ID of a procedure entity. Can be a list to retrieve more than
@@ -411,40 +428,25 @@ class btaConnection:
             a list of dictionaries or class objects of procedures
 
         """
-        data = self.query(resource="vorgang",
-                          return_format=return_format,
-                          fid=fid,
-                          date_start=date_start,
-                          date_end=date_end,
-                          num=num,
-                          updated_since=updated_since,
-                          updated_until=updated_until,
-                          descriptor=descriptor,
-                          sachgebiet=sachgebiet,
-                          document_type=document_type,
-                          process_type=process_type,
-                          title=title)
-        return data
+        return self._search("vorgang", **filters)
 
-    def get_procedure(self,
-                      btid=None,
-                      return_format="json",
-                      documentID=None,
-                      plenaryprotocolID=None):
+    def get_procedure(self, btid=None, **filters) -> list:
         """
-        Retrieves procedures specified by IDs
+        Retrieves procedure positions specified by IDs
 
         Parameters
         ----------
         btid: int/list, optional
-            ID of a procedure entity. Can be a list to retrieve more than
+            ID of a procedure position entity. Can be a list to retrieve more than
             one entity
         return_format: str, optional
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
         documentID: int, optional
-            Returns procedure related to that documentID
+            Returns procedure positions related to that documentID
+        processID: int, optional
+            Returns procedure positions related to that procedure
         plenaryprotocolID: int, optional
             Entity ID of a plenary protocol. Can be used to select activities,
             procedures and procedure positions that are connected to the
@@ -453,30 +455,12 @@ class btaConnection:
         Returns
         -------
         data: list
-            a list of dictionaries or class objects of procedures
+            a list of dictionaries or class objects of procedure positions
         """
-        if btid is None and documentID is None and plenaryprotocolID is None:
-            raise ValueError(
-                "Either an procedure ID, document ID or plenary protocol ID must be supplied")
-        else:
-            data = self.query(resource="vorgang",
-                              fid=btid,
-                              return_format=return_format,
-                              documentID=documentID,
-                              plenaryprotocolID=plenaryprotocolID)
-            return data
+        return self._get("vorgang", btid, **filters)
 
-    def search_procedureposition(self,
-                                 return_format="json",
-                                 num=100,
-                                 fid=None,
-                                 date_start=None,
-                                 date_end=None,
-                                 updated_since=None,
-                                 updated_until=None,
-                                 document_type=None,
-                                 processID=None,
-                                 title=None,):
+    # procedure positions
+    def search_procedureposition(self, **filters) -> list:
         """
         Searches procedure positions specified by the parameters
 
@@ -486,7 +470,7 @@ class btaConnection:
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
-        num: int, optional
+        limit: int, optional
             Number of maximal results to be returned. Defaults to 100
         fid: int/list, optional
             ID of an procedure position entity. Can be a list to retrieve more
@@ -514,25 +498,9 @@ class btaConnection:
             a list of dictionaries or class objects of procedure positions
         """
 
-        data = self.query(resource="vorgangsposition",
-                          return_format=return_format,
-                          fid=fid,
-                          date_start=date_start,
-                          date_end=date_end,
-                          num=num,
-                          updated_since=updated_since,
-                          updated_until=updated_until,
-                          document_type=document_type,
-                          processID=processID,
-                          title=title)
-        return data
+        return self._search("vorgangsposition", **filters)
 
-    def get_procedureposition(self,
-                              btid,
-                              return_format="json",
-                              documentID=None,
-                              processID=None,
-                              plenaryprotocolID=None):
+    def get_procedureposition(self, btid=None, **filters) -> list:
         """
         Retrieves procedure positions specified by IDs
 
@@ -559,30 +527,10 @@ class btaConnection:
         data: list
             a list of dictionaries or class objects of procedure positions
         """
-        if btid is None and documentID is None and processID is None:
-            raise ValueError(
-                "Either an procedure ID, document ID or procedure ID must be supplied")
-        else:
-            data = self.query(resource="vorgangsposition",
-                              fid=btid,
-                              return_format=return_format,
-                              documentID=documentID,
-                              processID=processID,
-                              plenaryprotocolID=plenaryprotocolID)
-            return data
+        return self._get("vorgangsposition", btid, **filters)
 
-    def search_document(self,
-                        return_format="json",
-                        num=100,
-                        fid=None,
-                        date_start=None,
-                        date_end=None,
-                        institution=None,
-                        fulltext=False,
-                        updated_since=None,
-                        updated_until=None,
-                        document_type=None,
-                        title=None,):
+    # documents
+    def search_document(self, **filters) -> list:
         """
         Searches documents specified by the parameters
 
@@ -592,7 +540,7 @@ class btaConnection:
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
-        num: int, optional
+        limit: int, optional
             Number of maximal results to be returned. Defaults to 100
         fid: int/list, optional
             ID of a document entity. Can be a list to retrieve more than one entity
@@ -622,31 +570,9 @@ class btaConnection:
         data: list
             a list of dictionaries or class objects of documents
         """
+        return self._search("drucksache", **filters)
 
-        if fulltext == False:
-            resource = "drucksache"
-        elif fulltext == True:
-            resource = "drucksache-text"
-        else:
-            resource = "drucksache"
-
-        data = self.query(resource=resource,
-                          return_format=return_format,
-                          fid=fid,
-                          date_start=date_start,
-                          date_end=date_end,
-                          institution=institution,
-                          num=num,
-                          updated_since=updated_since,
-                          updated_until=updated_until,
-                          document_type=document_type,
-                          title=title)
-        return data
-
-    def get_document(self,
-                     btid,
-                     return_format="json",
-                     fulltext=False):
+    def get_document(self, btid=None, **filters) -> list:
         """
         Retrieves documents specified by IDs
 
@@ -667,24 +593,10 @@ class btaConnection:
         data: list
             a list of dictionaries or class objects of documents
         """
+        return self._get("drucksache", btid, **filters)
 
-        if fulltext == False:
-            resource = "drucksache"
-        elif fulltext == True:
-            resource = "drucksache-text"
-        else:
-            resource = "drucksache"
-
-        data = self.query(resource=resource,
-                          fid=btid,
-                          return_format=return_format)
-        return data
-
-    def search_person(self,
-                      return_format="json",
-                      num=100,
-                      updated_since=None,
-                      updated_until=None,):
+    # persons
+    def search_person(self, **filters) -> list:
         """
         Searches persons specified by the parameters
 
@@ -694,7 +606,7 @@ class btaConnection:
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
-        num: int, optional
+        limit: int, optional
             Number of maximal results to be returned. Defaults to 100
         updated_since: str, optional
             Date and time after which updated documents are to be retrieved
@@ -706,17 +618,9 @@ class btaConnection:
         data: list
             a list of dictionaries or class objects of persons
         """
+        return self._search("person", **filters)
 
-        data = self.query(resource="person",
-                          return_format=return_format,
-                          num=num,
-                          updated_since=updated_since,
-                          updated_until=updated_until,)
-        return data
-
-    def get_person(self,
-                   btid,
-                   return_format="json"):
+    def get_person(self, btid=None, **filters) -> list:
         """
         Retrieves persons specified by IDs
 
@@ -736,15 +640,10 @@ class btaConnection:
             a list of dictionaries or class objects of persons
         """
 
-        data = self.query(resource="person",
-                          fid=btid,
-                          return_format=return_format)
-        return data
+        return self._get("person", btid, **filters)
 
-    def search_plenaryprotocol(self,
-                               return_format="json",
-                               num=100,
-                               **kwargs):
+    # plenary protocols
+    def search_plenaryprotocol(self, **filters) -> list:
         """
         Searches plenary protocols specified by the parameters
 
@@ -754,7 +653,7 @@ class btaConnection:
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
-        num: int, optional
+        limit: int, optional
             Number of maximal results to be returned. Defaults to 100
         date_start: str, optional
             Date after which entities should be retrieved. Format
@@ -776,36 +675,9 @@ class btaConnection:
         data: list
             a list of dictionaries or class objects of plenary protocols
         """
+        return self._search("plenarprotokoll", **filters)
 
-        date_start = kwargs.get("date_start")
-        date_end = kwargs.get("date_end")
-        institution = kwargs.get("institution")
-        fulltext = kwargs.get("fulltext")
-        updated_since = kwargs.get("updated_since")
-        updated_until = kwargs.get("updated_until")
-
-        if fulltext == False:
-            resource = "plenarprotokoll"
-        elif fulltext == True:
-            resource = "plenarprotokoll-text"
-        else:
-            resource = "plenarprotokoll"
-
-        data = self.query(resource=resource,
-                          return_format=return_format,
-                          date_start=date_start,
-                          date_end=date_end,
-                          institution=institution,
-                          num=num,
-                          updated_since=updated_since,
-                          updated_until=updated_until,)
-
-        return data
-
-    def get_plenaryprotocol(self,
-                            btid,
-                            return_format="json",
-                            fulltext=False):
+    def get_plenaryprotocol(self, btid=None, **filters) -> list:
         """
         Retrieves plenary protocols specified by IDs
 
@@ -826,28 +698,10 @@ class btaConnection:
         data: list
             a list of dictionaries or class objects of plenary protocols
         """
+        return self._get("plenarprotokoll", btid, **filters)
 
-        if fulltext == False:
-            resource = "plenarprotokoll"
-        elif fulltext == True:
-            resource = "plenarprotokoll-text"
-        else:
-            resource = "plenarprotokoll"
-
-        data = self.query(resource=resource,
-                          fid=btid,
-                          return_format=return_format)
-        return data
-
-    def search_activity(self,
-                        return_format="json",
-                        num=100,
-                        date_start=None,
-                        date_end=None,
-                        institution=None,
-                        updated_since=None,
-                        updated_until=None,
-                        descriptor=None,):
+    # activities
+    def search_activity(self, **filters) -> list:
         """
         Searches activities specified by the parameters
 
@@ -857,7 +711,7 @@ class btaConnection:
             Return format of the data. Defaults to json. XML not implemented
             yet. Other option is "object" which will return results as class
             objects
-        num: int, optional
+        limit: int, optional
             Number of maximal results to be returned. Defaults to 100
         date_start: str, optional
             Date after which entities should be retrieved. Format
@@ -881,24 +735,9 @@ class btaConnection:
         data: list
             a list of dictionaries or class objects of activities
         """
+        return self._search("aktivitaet", **filters)
 
-        data = self.query(resource="aktivitaet",
-                          return_format=return_format,
-                          date_start=date_start,
-                          date_end=date_end,
-                          institution=institution,
-                          num=num,
-                          updated_since=updated_since,
-                          updated_until=updated_until,
-                          descriptor=descriptor)
-
-        return data
-
-    def get_activity(self,
-                     btid=None,
-                     return_format="json",
-                     documentID=None,
-                     plenaryprotocolID=None):
+    def get_activity(self, btid=None, **filters) -> list:
         """
         Retrieves activities specified by IDs
 
@@ -924,27 +763,38 @@ class btaConnection:
         data: list
             a list of dictionaries or class objects of activities
         """
-        if btid is None and documentID is None and plenaryprotocolID is None:
-            raise ValueError(
-                "Either an activity ID, document ID or plenary protocol ID must be supplied")
-        else:
-            data = self.query(resource="aktivitaet",
-                              fid=btid,
-                              return_format=return_format,
-                              documentID=documentID,
-                              plenaryprotocolID=plenaryprotocolID)
-            return data
-
+        return self._get("aktivitaet", btid, **filters)
+    
+    # utility
     def list_methods(self):
         """
         list all methods offered by btaConnection
 
         Returns
         -------
-        data: list
+        list_of_methods: list
             A list of strings
 
         """
         list_of_methods = dir(btaConnection)
         list_of_methods = [item for item in list_of_methods if "__" not in item]
         return list_of_methods
+
+if __name__ == "__main__":
+    import sys
+    from .utils import parse_args_to_dict
+    # very small demo CLI
+    if len(sys.argv) < 3:
+        print("Usage: python -m bundestag_api <resource> <search|get> key=val ...")
+        sys.exit(1)
+    resource = cast(Resource, sys.argv[1])
+    action = sys.argv[2]
+    kwargs = parse_args_to_dict(sys.argv[3:])
+    conn = btaConnection(apikey=kwargs.pop("apikey", None))
+    if action == "search":
+        print(conn.query(resource=resource, **kwargs))
+    elif action == "get":
+        fid = kwargs.pop("fid", None)
+        print(conn.query(resource=resource, fid=fid, **kwargs))
+    else:
+        print("action must be 'search' or 'get'")

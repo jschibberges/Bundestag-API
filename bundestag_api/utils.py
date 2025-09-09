@@ -1,9 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Created on Fri Mar  8 14:33:26 2024
-
-@author: jschi
-"""
 
 from datetime import datetime
 
@@ -16,6 +11,14 @@ def is_iso8601(string):
     except ValueError:
         return False
 
+def to_iso8601(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%dT%H:%M:%S")
+    if isinstance(value, str):
+        return value  # your existing is_iso8601 will validate
+    raise ValueError("Expected datetime or ISO8601 string")
 
 def parse_args_to_dict(args):
     args_dict = {}

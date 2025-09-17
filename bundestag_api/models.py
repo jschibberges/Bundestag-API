@@ -4,49 +4,40 @@ class Person:
     """This class represents a German parliamentarian"""
 
     def __init__(self, dictionary):
-        self.btid = dictionary["id"]
-        if "nachname" in dictionary:
-            self.lastname = dictionary["nachname"]
-        else:
-            self.lastname = None
-        if "vorname" in dictionary:
-            self.firstname = dictionary["vorname"]
-        else:
-            self.firstname = None
+        self.btid = dictionary.get("id")
+        self._from_dict(dictionary)
+
+    def _from_dict(self, dictionary):
+        """Helper to parse dictionary data and set attributes."""
+        self.lastname = dictionary.get("nachname")
+        self.firstname = dictionary.get("vorname")
+        self.basedate = dictionary.get("basisdatum")
+        self.date = dictionary.get("datum")
+        self.nameaddendum = dictionary.get("namenszusatz")
+        self.legislativeperiod = dictionary.get("wahlperiode")
+
+        # Simplified role and faction parsing
         mdbrole = False
-        if "basisdatum" in dictionary:
-            self.basedate = dictionary["basisdatum"]
-        else:
-            self.basedate = None
-        if "datum" in dictionary:
-            self.date = dictionary["datum"]
-        else:
-            self.date = None
-        if "namenszusatz" in dictionary:
-            self.nameaddendum = dictionary["namenszusatz"]
-        ttl = dictionary["titel"].split(",")
-        if ttl[1] == " MdB":
-            self.faction = ttl[2].strip()
+        self.faction = None
+        self.titel = None
+
+        titel_str = dictionary.get("titel", "")
+        titel_parts = titel_str.split(",")
+        if len(titel_parts) > 1 and " MdB" in titel_parts[1]:
             mdbrole = True
-        elif "person_roles" in dictionary:
-            if "fraktion" in dictionary["person_roles"][0]:
-                self.faction = dictionary["person_roles"][0]["fraktion"]
-        else:
-            self.faction = None
-        if ttl[0].split(dictionary["vorname"])[0] != "":
-            self.titel = ttl[0].split(dictionary["vorname"])[0].strip()
-        else:
-            self.titel = None
-        if "wahlperiode" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode"]
-        else:
-            self.legislativeperiod = None
-        if "person_roles" in dictionary:
-            liro = []
-            for r in dictionary["person_roles"]:
-                liro.append(Role(r))
-            self.roles = liro
-        elif "person_roles" not in dictionary and mdbrole is True and "wahlperiode" in dictionary:
+            if len(titel_parts) > 2:
+                self.faction = titel_parts[2].strip()
+        
+        person_roles = dictionary.get("person_roles")
+        if not self.faction and person_roles and "fraktion" in person_roles[0]:
+            self.faction = person_roles[0].get("fraktion")
+
+        if self.firstname and titel_parts[0].split(self.firstname)[0] != "":
+            self.titel = titel_parts[0].split(self.firstname)[0].strip()
+
+        if person_roles:
+            self.roles = [Role(r) for r in person_roles]
+        elif mdbrole and self.legislativeperiod:
             self.roles = [Role({"funktion": "MdB",
                                "fraktion": self.faction,
                                 "nachname": self.lastname,
@@ -55,66 +46,15 @@ class Person:
                                 })]
         else:
             self.roles = None
-        if "wahlperiode" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode"]
-        else:
-            self.legislativeperiod = None
+
+    def __repr__(self):
+        return f"Person(btid={self.btid}, name='{self.firstname} {self.lastname}')"
 
     def returnroles(self):
+        if not self.roles:
+            return
         for r in self.roles:
             print(r.returnrole())
-
-    def update_by_id(self, apikey=None):
-        if apikey is None:
-            raise ValueError("Function needs an API key.")
-        dat1 = self.query(apikey, resource="person", fid=self.btid)
-        dictionary = dat1["documents"][0]
-        mdbrole = False
-        if "basisdatum" in dictionary:
-            self.basedate = dictionary["basisdatum"]
-        else:
-            self.basedate = None
-        if "datum" in dictionary:
-            self.date = dictionary["datum"]
-        else:
-            self.date = None
-        if "namenszusatz" in dictionary:
-            self.nameaddendum = dictionary["namenszusatz"]
-        ttl = dictionary["titel"].split(",")
-        if ttl[1] == " MdB":
-            self.faction = ttl[2].strip()
-            mdbrole = True
-        elif "person_roles" in dictionary:
-            if "fraktion" in dictionary["person_roles"][0]:
-                self.faction = dictionary["person_roles"][0]["fraktion"]
-        else:
-            self.faction = None
-        if ttl[0].split(dictionary["vorname"])[0] != "":
-            self.titel = ttl[0].split(dictionary["vorname"])[0].strip()
-        else:
-            self.titel = None
-        if "wahlperiode" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode"]
-        else:
-            self.legislativeperiod = None
-        if "person_roles" in dictionary:
-            liro = []
-            for r in dictionary["person_roles"]:
-                liro.append(Role(r))
-            self.roles = liro
-        elif "person_roles" not in dictionary and mdbrole is True and "wahlperiode" in dictionary:
-            self.roles = [Role({"funktion": "MdB",
-                               "fraktion": self.faction,
-                                "nachname": self.lastname,
-                                "vorname": self.firstname,
-                                "wahlperiode_nummer": self.legislativeperiod
-                                })]
-        else:
-            self.roles = None
-        if "wahlperiode" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode"]
-        else:
-            self.legislativeperiod = None
 
 
 class Role:
@@ -123,47 +63,21 @@ class Role:
     def __init__(self, dictionary):
         self.function = dictionary["funktion"]
         if "wahlperiode_nummer" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode_nummer"]
-        else:
-            self.legislativeperiod = None
-        if "namenszusatz" in dictionary:
-            self.nameaddendum = dictionary["namenszusatz"]
-        else:
-            self.nameaddendum = None
-        if "funktionszusatz" in dictionary:
-            self.functionaddendum = dictionary["funktionszusatz"]
-        else:
-            self.functionaddendum = None
-        if "fraktion" in dictionary:
-            self.faction = dictionary["fraktion"]
-        else:
-            self.faction = None
-        if "bundesland" in dictionary:
-            self.federalstate = dictionary["bundesland"]
-        else:
-            self.federalstate = None
-        if "nachname" in dictionary:
-            self.lastname = dictionary["nachname"]
-        else:
-            self.lastname = None
-        if "vorname" in dictionary:
-            self.firstname = dictionary["vorname"]
-        else:
-            self.firstname = None
-        if "wahlkreiszusatz" in dictionary:
-            self.districtaddendum = dictionary["wahlkreiszusatz"]
-        else:
-            self.districtaddendum = None
-        if "ressort_titel" in dictionary:
-            self.department = dictionary["ressort_titel"]
-        else:
-            self.department = None
+            self.legislativeperiod = dictionary.get("wahlperiode_nummer")
+        self.nameaddendum = dictionary.get("namenszusatz")
+        self.functionaddendum = dictionary.get("funktionszusatz")
+        self.faction = dictionary.get("fraktion")
+        self.federalstate = dictionary.get("bundesland")
+        self.lastname = dictionary.get("nachname")
+        self.firstname = dictionary.get("vorname")
+        self.districtaddendum = dictionary.get("wahlkreiszusatz")
+        self.department = dictionary.get("ressort_titel")
 
     def __str__(self):
         return f'Person: {self.firstname}{" " if self.nameaddendum!=None else ""}{self.nameaddendum if self.nameaddendum!=None else ""} {self.lastname} {"(" if self.faction!= None else ""}{self.faction if self.faction!= None else ""}{")" if self.faction!= None else ""} - {self.function}'
 
     def __repr__(self):
-        return f'Person: {self.firstname}{" " if self.nameaddendum!=None else ""}{self.nameaddendum if self.nameaddendum!=None else ""} {self.lastname} {"(" if self.faction!= None else ""}{self.faction if self.faction!= None else ""}{")" if self.faction!= None else ""} - {self.function}'
+        return f"Role(function='{self.function}', name='{self.firstname} {self.lastname}')"
 
     def returnrole(self):
         return (
@@ -176,61 +90,30 @@ class Drucksache:
 
     def __init__(self, dictionary):
         self.btid = int(dictionary["id"])
-        if "herausgeber" in dictionary:
-            if dictionary["herausgeber"] == "BT":
-                self.publisher = "Bundestag"
-            elif dictionary["herausgeber"] == "BR":
-                self.publisher = "Bundesrat"
-            elif dictionary["herausgeber"] is not None and dictionary["herausgeber"] != "BR" and dictionary["herausgeber"] != "BT":
-                self.publisher = dictionary["herausgeber"]
-        else:
-            self.publisher = None
-        if "urheber" in dictionary:
-            self.originator = dictionary["urheber"]
-        else:
-            self.originator = None
-        if "autoren_anzahl" in dictionary:
-            self.author_nr = dictionary["autoren_anzahl"]
-        else:
-            self.author_nr = None
-        if "ressort" in dictionary:
-            self.author_nr = dictionary["ressort"]
-        else:
-            self.author_nr = None
-        if "datum" in dictionary:
-            self.date = dictionary["datum"]
-        else:
-            self.date = None
-        if "wahlperiode" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode"]
-        else:
-            self.legislativeperiod = None
-        if "titel" in dictionary:
-            self.title = dictionary["titel"]
-        else:
-            self.title = None
-        if "drucksachetyp" in dictionary:
-            self.doctype = dictionary["drucksachetyp"]
-        else:
-            self.doctype = None
-        if "fundstelle" in dictionary:
-            if "pdf_url" in dictionary["fundstelle"]:
-                self.pdf_url = dictionary["fundstelle"]["pdf_url"]
-            self.reference = dictionary["fundstelle"]
-        else:
-            self.reference = None
-        if "dokumentart" in dictionary:
-            self.docname = dictionary["dokumentart"]
-        else:
-            self.docname = None
-        if "typ" in dictionary:
-            self.instance = dictionary["typ"]
-        else:
-            self.instance = None
-        if "dokumentnummer" in dictionary:
-            self.docnumber = dictionary["dokumentnummer"]
-        else:
-            self.docnumber = None
+        self.publisher = dictionary.get("herausgeber")
+        if self.publisher == "BT": self.publisher = "Bundestag"
+        if self.publisher == "BR": self.publisher = "Bundesrat"
+        
+        self.originator = dictionary.get("urheber")
+        self.author_nr = dictionary.get("autoren_anzahl")
+        self.ressort = dictionary.get("ressort")
+        self.date = dictionary.get("datum")
+        self.legislativeperiod = dictionary.get("wahlperiode")
+        self.title = dictionary.get("titel")
+        self.doctype = dictionary.get("drucksachetyp")
+        
+        self.reference = dictionary.get("fundstelle")
+        self.pdf_url = None
+        if self.reference and "pdf_url" in self.reference:
+            self.pdf_url = self.reference.get("pdf_url")
+
+        self.docname = dictionary.get("dokumentart")
+        self.instance = dictionary.get("typ")
+        self.docnumber = dictionary.get("dokumentnummer")
+        
+        self.author = None
+        self.authordisplay = None
+        self.authorid = None
         if "autoren_anzeige" in dictionary:
             auan = []
             auanid = []
@@ -240,22 +123,13 @@ class Drucksache:
             self.author = auan
             self.authorid = auanid
             self.authordisplay = dictionary["autoren_anzeige"]
-        else:
-            self.author = None
-            self.authordisplay = None
-        if "text" in dictionary:
-            self.text = dictionary["text"]
-        else:
-            self.text = None
+        self.text = dictionary.get("text")
 
     def __str__(self):
         return f'{self.instance}: ({self.btid}) {self.doctype} - {self.title} - {self.date}'
 
     def __repr__(self):
         return f'{self.instance}: ({self.btid}) {self.doctype} - {self.title} - {self.date}'
-
-    def get_authors(self, apikey):
-        pass
 
 
 class Aktivitaet:
@@ -276,18 +150,8 @@ class Aktivitaet:
     def __str__(self):
         return f'{self.instance}: ({self.btid}) {self.activitytype} - {self.title} - {self.date}'
 
-    def get_procedure(self, apikey):
-        data = self.query(apikey=apikey, resource="vorgang",
-                          fid=self.procedure_reference)
-        data = Vorgang(data[0])
-        return data
-
-    def get_document(self, apikey):
-        data = self.query(
-            apikey=apikey, resource="drucksache-text", fid=self.document_reference)
-        data = Drucksache(data[0])
-        return data
-
+    def __repr__(self):
+        return f'Aktivitaet(btid={self.btid}, activitytype="{self.activitytype}")'
 
 class Vorgang:
     """This class represents a legislative process in of the German federal parliaments"""
@@ -295,91 +159,39 @@ class Vorgang:
     def __init__(self, dictionary):
         self.btid = dictionary["id"]
         self.process_positions = []
-        if "datum" in dictionary:
-            self.date = dictionary["datum"]
-        else:
-            self.date = None
-        if "titel" in dictionary:
-            self.title = dictionary["titel"]
-        else:
-            self.title = None
-        if "typ" in dictionary:
-            self.instance = dictionary["typ"]
-        else:
-            self.instance = None
-        if "vorgangstyp" in dictionary:
-            self.processtype = dictionary["vorgangstyp"]
-        else:
-            self.processtype = None
-        if "initiative" in dictionary:
-            self.initiativ = dictionary["initiative"]
-        else:
-            self.initiativ = None
-        if "abstract" in dictionary:
-            self.abstract = dictionary["abstract"]
-        else:
-            self.abstract = None
-        if "archiv" in dictionary:
-            self.archive = dictionary["archiv"]
-        else:
-            self.archive = None
-        if "beratungsstand" in dictionary:
-            self.status = dictionary["beratungsstand"]
-        else:
-            self.status = None
-        if "deskriptor" in dictionary:
-            self.descriptor = dictionary["deskriptor"]
-        else:
-            self.descriptor = None
-        if "gesta" in dictionary:
-            self.gesta = dictionary["gesta"]
-        else:
-            self.gesta = None
-        if "inkrafttreten" in dictionary:
+        self.date = dictionary.get("datum")
+        self.title = dictionary.get("titel")
+        self.instance = dictionary.get("typ")
+        self.processtype = dictionary.get("vorgangstyp")
+        self.initiativ = dictionary.get("initiative")
+        self.abstract = dictionary.get("abstract")
+        self.archive = dictionary.get("archiv")
+        self.status = dictionary.get("beratungsstand")
+        self.descriptor = dictionary.get("deskriptor")
+        self.gesta = dictionary.get("gesta")
+        self.effectivedate = None
+        if dictionary.get("inkrafttreten"):
             self.effectivedate = dictionary["inkrafttreten"][0]["datum"]
-        else:
-            self.effectivedate = None
-        if "kom" in dictionary:
-            self.kom = dictionary["kom"]
-        else:
-            self.kom = None
-        if "mitteilung" in dictionary:
-            self.notification = dictionary["mitteilung"]
-        else:
-            self.notification = None
-        if "ratsdok" in dictionary:
-            self.eucouncilnr = dictionary["ratsdok"]
-        else:
-            self.eucouncilnr = None
-        if "sachgebiet" in dictionary:
-            self.subject = dictionary["sachgebiet"]
-        else:
-            self.subject = None
-        if "verkuendung" in dictionary:
-            self.announcement = dictionary["verkuendung"]
-        else:
-            self.announcement = None
-        if "wahlperiode" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode"]
-        else:
-            self.legislativeperiod = None
-        if "zustimmungsbeduerftigkeit" in dictionary:
+        self.kom = dictionary.get("kom")
+        self.notification = dictionary.get("mitteilung")
+        self.eucouncilnr = dictionary.get("ratsdok")
+        self.subject = dictionary.get("sachgebiet")
+        self.announcement = dictionary.get("verkuendung")
+        self.legislativeperiod = dictionary.get("wahlperiode")
+        
+        self.approvalnecessary = None
+        self.approvalnecessaryBool = None
+        self.urgency = None
+        if dictionary.get("zustimmungsbeduerftigkeit"):
             self.approvalnecessary = dictionary["zustimmungsbeduerftigkeit"]
             self.approvalnecessaryBool = dictionary["zustimmungsbeduerftigkeit"][len(
                 dictionary["zustimmungsbeduerftigkeit"])-1].split(",")[0]
             if any("bes.eilbed." in s for s in dictionary["zustimmungsbeduerftigkeit"]):
                 self.urgency = True
-        else:
-            self.approvalnecessary = None
-            self.approvalnecessaryBool = None
-            self.urgency = None
-
-    def get_positions(self):
-        data = self.query("vorgangsposition", procedureID=self.btid)
-        for d in data:
-            self.process_positions.append(Vorgangsposition(d))
 
     def show_positions(self):
+        if not self.process_positions:
+            return
         for pp in self.process_positions:
             print(pp)
 
@@ -395,56 +207,19 @@ class Vorgangsposition:
 
     def __init__(self, dictionary):
         self.btid = dictionary["id"]
-        if "aktivitaet_anzeige" in dictionary:
-            pass
-        if "datum" in dictionary:
-            self.date = dictionary["datum"]
-        else:
-            self.date = None
-        if "dokumentart" in dictionary:
-            self.docname = dictionary["dokumentart"]
-        else:
-            self.docname = None
-        if "fortsetzung" in dictionary:
-            self.continuation = dictionary["fortsetzung"]
-        else:
-            self.continuation = None
-        if "gang" in dictionary:
-            self.course = dictionary["gang"]
-        else:
-            self.course = None
-        if "gang" in dictionary:
-            self.course = dictionary["gang"]
-        else:
-            self.course = None
-        if "nachtrag" in dictionary:
-            self.Supplement = dictionary["nachtrag"]
-        else:
-            self.Supplement = None
-        if "titel" in dictionary:
-            self.title = dictionary["titel"]
-        else:
-            self.title = None
-        if "typ" in dictionary:
-            self.instance = dictionary["typ"]
-        else:
-            self.instance = None
-        if "urheber" in dictionary:
-            self.originator = dictionary["urheber"]
-        else:
-            self.originator = None
-        if "vorgang_id" in dictionary:
-            self.procedureID = dictionary["vorgang_id"]
-        else:
-            self.procedureID = None
-        if "vorgangsposition" in dictionary:
-            self.processposition = dictionary["vorgangsposition"]
-        else:
-            self.processposition = None
-        if "vorgangstyp" in dictionary:
-            self.processtype = dictionary["vorgangstyp"]
-        else:
-            self.processtype = None
+        self.date = dictionary.get("datum")
+        self.docname = dictionary.get("dokumentart")
+        self.continuation = dictionary.get("fortsetzung")
+        self.course = dictionary.get("gang")
+        self.Supplement = dictionary.get("nachtrag")
+        self.title = dictionary.get("titel")
+        self.instance = dictionary.get("typ")
+        self.originator = dictionary.get("urheber")
+        self.procedureID = dictionary.get("vorgang_id")
+        self.processposition = dictionary.get("vorgangsposition")
+        self.processtype = dictionary.get("vorgangstyp")
+        
+        self.institution = None
         if "zuordnung" in dictionary:
             if dictionary["zuordnung"] == "BT":
                 self.institution = "Bundestag"
@@ -452,14 +227,12 @@ class Vorgangsposition:
                 self.institution = "Bundesrat"
             elif dictionary["zuordnung"] is not None and dictionary["zuordnung"] != "BR" and dictionary["zuordnung"] != "BT":
                 self.institution = dictionary["zuordnung"]
-        else:
-            self.institution = None
 
     def __str__(self):
         return f'{self.instance}: ({self.procedureID}) {self.processtype} - {self.title} - {self.date}'
 
     def __repr__(self):
-        pass
+        return f'Vorgangsposition(btid={self.btid}, procedureID={self.procedureID})'
 
 
 class Plenarprotokoll:
@@ -467,56 +240,28 @@ class Plenarprotokoll:
 
     def __init__(self, dictionary):
         self.btid = dictionary["id"]
-        if "datum" in dictionary:
-            self.date = dictionary["datum"]
-        else:
-            self.date = None
-        if "dokumentart" in dictionary:
-            self.docname = dictionary["dokumentart"]
-        else:
-            self.docname = None
-        if "titel" in dictionary:
-            self.title = dictionary["titel"]
-        else:
-            self.title = None
-        if "typ" in dictionary:
-            self.instance = dictionary["typ"]
-        else:
-            self.instance = None
-        if "herausgeber" in dictionary:
-            if dictionary["herausgeber"] == "BT":
-                self.publisher = "Bundestag"
-            elif dictionary["herausgeber"] == "BR":
-                self.publisher = "Bundesrat"
-            elif dictionary["herausgeber"] is not None and dictionary["herausgeber"] != "BR" and dictionary["herausgeber"] != "BT":
-                self.publisher = dictionary["herausgeber"]
-        else:
-            self.publisher = None
-        if "wahlperiode" in dictionary:
-            self.legislativeperiod = dictionary["wahlperiode"]
-        else:
-            self.legislativeperiod = None
-        if "text" in dictionary:
-            self.text = dictionary["text"]
-        else:
-            self.text = None
-        if "fundstelle" in dictionary:
-            if "pdf_url" in dictionary["fundstelle"]:
-                self.pdf_url = dictionary["fundstelle"]["pdf_url"]
-            self.reference = dictionary["fundstelle"]
-        else:
-            self.reference = None
-        if "sitzungsbemerkung" in dictionary:
-            self.sessioncomment = dictionary["sitzungsbemerkung"]
-        else:
-            self.sessioncomment = None
-        if "dokumentnummer" in dictionary:
-            self.docnumber = dictionary["dokumentnummer"]
-        else:
-            self.docnumber = None
+        self.date = dictionary.get("datum")
+        self.docname = dictionary.get("dokumentart")
+        self.title = dictionary.get("titel")
+        self.instance = dictionary.get("typ")
+        
+        self.publisher = dictionary.get("herausgeber")
+        if self.publisher == "BT": self.publisher = "Bundestag"
+        if self.publisher == "BR": self.publisher = "Bundesrat"
+
+        self.legislativeperiod = dictionary.get("wahlperiode")
+        self.text = dictionary.get("text")
+        
+        self.reference = dictionary.get("fundstelle")
+        self.pdf_url = None
+        if self.reference and "pdf_url" in self.reference:
+            self.pdf_url = self.reference.get("pdf_url")
+
+        self.sessioncomment = dictionary.get("sitzungsbemerkung")
+        self.docnumber = dictionary.get("dokumentnummer")
 
     def __str__(self):
         return f'{self.docname}: {self.docnumber} - {self.title} - {self.date}'
 
     def __repr__(self):
-        pass
+        return f'Plenarprotokoll(btid={self.btid}, docnumber="{self.docnumber}")'

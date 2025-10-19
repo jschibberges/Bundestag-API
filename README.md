@@ -1,112 +1,288 @@
+# Bundestag API
+
 [![Upload Python Package](https://github.com/jschibberges/Bundestag-API/actions/workflows/python-publish.yml/badge.svg)](https://github.com/jschibberges/Bundestag-API/actions/workflows/python-publish.yml)
+[![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
 
-# Bundestag-API
-A wrapper for the official Bundestag (German Federal Parliament) API in Python. It aim is to make querying the API a little easier in Python and relieve you from writing a lot of boilerplate code. 
+A beginner-friendly Python wrapper for accessing German Federal Parliament (Bundestag) data. This package simplifies querying parliamentary documents, procedures, plenary protocols, and member information through the official Bundestag API.
 
-It currently doesn't encompass a 100% of the lastest API parameters (see To-Do section) but aims to do so shortly.
+Perfect for data scientists, researchers, and political analysts who want to analyze German parliamentary data without dealing with complex API calls.
 
-The official information on the API can be found here: [Bundestag.de](https://dip.bundestag.de/%C3%BCber-dip/hilfe/api)
+## What You Can Do
 
-## Installation
+- **Analyze Parliamentary Documents**: Access bills, reports, and official documents
+- **Track Legislative Processes**: Follow how laws move through parliament
+- **Study Voting Patterns**: Examine plenary protocols and activities
+- **Research Politicians**: Get information about current and former members of parliament
+- **Time Series Analysis**: Filter data by date ranges for trend analysis
 
-### Pip install (recommended)
+## Quick Start
 
-```
-$ pip install bundestag_api
-```
+### Installation
 
-### Install from source
-
-```
-$ git clone https://github.com/jschibberges/Bundestag-API.git
-$ cd Bundestag-API
-$ pip install -r requirements.txt
+```bash
+pip install bundestag_api
 ```
 
-## Setup
-The API requires a key to authenticate requests. Personal key can be requested from the [Bundestag administration](mailto:parlamentsdokumentation@bundestag.de). However a general API key has been published that is valid until May 31st 2024. This key is automatically used until that date when no other key is supplied by the user.
+### Your First Query
 
-## Usage
-To save your API key create a connection-object, that you can then pass to the search functions. It will save you time, should you have to change API keys at a later date. If you don't supply an API key, the official API key will be used until 31st of May 2025. 
-```
+```python
 import bundestag_api
-bta = bundestag_api.btaConnection() #if you want to use your own API key, supply it via "apikey="XXX")
-data = bta.search_document()
-for d in data:
-    print(d["drucksachetyp"]+": "+d["titel"])
-```
-The query-function serves as a general search function that can be used to query all resources of the API. However, you will also have to specify all relevant parameters for your search. Data is returned as a dictionary (which can easily be saved as json). Minimally the resource type needs to specified.
 
-For each resource type the api offers a search function and a get function are implemented. Get functions retrieve data for specific entity ids while search function offer all parameters that are relevant to the resource type. Example for documents (Drucksachen):
-```
-bta.search_document(datestart="2022-11-01",dateend="2022-11-01",institution="BT")
-bta.get_document(btid=264030)
-```
-The Bundestag API serves 8 different resources though 2 are doubled with the only difference being whether the document text is returned via the API. 
+# Create a connection (uses free public API key)
+bt = bundestag_api.btaConnection()
 
-### Activities ("Aktivität")
-Get one or more activities by their ID
-```
-bta.get_activity(btid)
-```
-Search for documents by specifying parameters for start and end date or institution. Important: The standard number of entities returned are 100. If more are desired, the "num" parameter must be set.
-```
-bta.search_activity()
-```
-### Documents / Full-Text ("Drucksache")
-Get one or more documents by their ID
-```
-bta.get_document(btid)
-```
-Search for documents by specifying parameters for start and end date or institution. Important: The standard number of entities returned are 100. If more are desired, the "num" parameter must be set.
-```
-bta.search_document()
-```
-"fulltext=True" can be passed as parameter to retrieve the full text of the document (if available). It defaults to False.
+# Get recent documents
+documents = bt.search_document(limit=5, date_start="2024-01-01")
 
-### Persons ("Person")
-Get one or more persons by their ID
-```
-bta.get_person(btid)
-```
-Search for persons by specifying parameters for start and end date or institution. Important: The standard number of entities returned are 100. If more are desired, the "num" parameter must be set.
-```
-bta.search_person()
-```
-### Plenary Protocols / Full-Text ("Plenarprotokoll")
-Get one or more plenary protocols by their ID
-```
-bta.get_plenaryprotocol(btid)
-```
-Search for plenary protocols by specifying parameters for start and end date or institution. Important: The standard number of entities returned are 100. If more are desired, the "num" parameter must be set.
-```
-bta.search_plenaryprotocol()
-```
-"fulltext=True" can be passed as parameter to retrieve the full text of the plenary protocols (if available). It defaults to False.
-
-### Procedures ("Vorgang")
-Get one or more procedures by their ID
-```
-bta.get_procedure(btid)
-```
-Search for procedures by specifying parameters for start and end date or institution. Important: The standard number of entities returned are 100. If more are desired, the "num" parameter must be set.
-```
-bta.search_procedure()
-```
-### Procedure Positions ("Vorgangsposition")
-Get one or more procedure positions by their ID
-```
-bta.get_procedure(btid)
-```
-Search for procedure positions by specifying parameters for start and end date or institution. Important: The standard number of entities returned are 100. If more are desired, the "num" parameter must be set.
-```
-bta.search_procedure()
+# Print document titles
+for doc in documents:
+    print(f"{doc['drucksachetyp']}: {doc['titel']}")
 ```
 
-## ToDo's
-- Implement filters for GESTA-Number, Beratungsstand, Fundstelle, Initiative, Ressort (federführend), Verkündungsblatt_Kürzel, Vorgangstyp, Vorgangstyp-Notation
-- Implement retries before failure
-- Implement sufficient unit tests
-- Implement more extensive logging
-- Parallelize requests for larger queries
-- Extend Class methods
+## Core Concepts
+
+The Bundestag API provides access to 6 main data types:
+
+| Data Type | Description | Use Cases |
+|-----------|-------------|-----------|
+| **Documents** (`drucksache`) | Bills, reports, proposals | Policy analysis, text mining |
+| **Procedures** (`vorgang`) | Legislative processes | Tracking law development |
+| **Activities** (`aktivitaet`) | Parliamentary actions | Voting behavior analysis |
+| **Persons** (`person`) | MPs and officials | Political network analysis |
+| **Plenary Protocols** (`plenarprotokoll`) | Session transcripts | Speech analysis, debate tracking |
+| **Procedure Positions** (`vorgangsposition`) | Steps in processes | Process flow analysis |
+
+## Common Use Cases for Data Scientists
+
+### 1. Document Analysis
+
+```python
+# Get all documents from a specific time period
+documents = bt.search_document(
+    date_start="2024-01-01",
+    date_end="2024-03-31",
+    limit=100
+)
+
+# Get full text for analysis
+doc_with_text = bt.search_document(
+    fid=[12345],  # specific document ID
+    fulltext=True
+)
+```
+
+### 2. Tracking Legislative Processes
+
+```python
+# Find procedures by topic
+procedures = bt.search_procedure(
+    descriptor=["Climate", "Energy"],  # AND search
+    limit=50
+)
+
+# Get detailed procedure information
+procedure_details = bt.get_procedure(btid=12345)
+```
+
+### 3. Analyzing Parliamentary Speeches
+
+```python
+# Get plenary protocols with full text
+protocols = bt.search_plenaryprotocol(
+    date_start="2024-01-01",
+    fulltext=True,
+    limit=10
+)
+```
+
+### 4. Member Analysis
+
+```python
+# Search for members of the Bundestag
+members = bt.search_person(limit=100)
+
+# Get detailed information about a specific person
+member_details = bt.get_person(btid=12345)
+```
+
+## Working with Data
+
+### Return Formats
+
+The package supports multiple return formats to fit your workflow:
+
+```python
+# JSON format (default) - good for general analysis
+data_json = bt.search_document(return_format="json")
+
+# Python objects - good for object-oriented programming
+data_objects = bt.search_document(return_format="object")
+
+# Pandas DataFrame - perfect for data analysis
+data_df = bt.search_document(return_format="pandas")
+```
+
+### Filtering Data
+
+All search functions support common filters:
+
+```python
+documents = bt.search_document(
+    date_start="2024-01-01",      # Start date (YYYY-MM-DD)
+    date_end="2024-12-31",        # End date (YYYY-MM-DD)  
+    institution="BT",             # BT=Bundestag, BR=Bundesrat
+    drucksache_type="Antrag",     # Specific 'Drucksache' types
+    title=["Climate", "Energy"],  # Keywords in title (OR search)
+    limit=100                     # Maximum results
+)
+```
+
+### Handling Large Datasets
+
+```python
+# Get all documents (automatically handles pagination)
+all_documents = bt.search_document(
+    date_start="2024-01-01",
+    limit=1000  # Will make multiple API calls as needed
+)
+
+# Process data in chunks for memory efficiency
+for i in range(0, len(all_documents), 100):
+    chunk = all_documents[i:i+100]
+    # Process your chunk here
+    process_documents(chunk)
+```
+
+## Data Structure Examples
+
+### Document Structure
+```python
+{
+    "id": 264030,
+    "titel": "Climate Protection Act Amendment",
+    "drucksachetyp": "Gesetzentwurf",
+    "datum": "2024-01-15",
+    "urheber": ["Federal Government"],
+    "fundstelle": {
+        "pdf_url": "https://...",
+        "dokumentnummer": "20/1234"
+    }
+}
+```
+
+### Person Structure
+```python
+{
+    "id": 12345,
+    "vorname": "Angela",
+    "nachname": "Merkel", 
+    "titel": "Dr.",
+    "person_roles": [{
+        "funktion": "MdB",
+        "fraktion": "CDU/CSU"
+    }]
+}
+```
+
+## API Authentication
+
+The package includes a public API key that's valid until May 31, 2026. For production use or higher rate limits, request your personal API key from [parlamentsdokumentation@bundestag.de](mailto:parlamentsdokumentation@bundestag.de).
+
+```python
+# Using personal API key
+bt = bundestag_api.btaConnection(apikey="your_api_key_here")
+```
+
+## Best Practices for Data Scientists
+
+### 1. Start Small
+```python
+# Test with small datasets first
+test_data = bt.search_document(limit=10)
+print(f"Retrieved {len(test_data)} documents")
+```
+
+### 2. Use Appropriate Limits
+```python
+# Default limit is 100, increase for larger analyses
+large_dataset = bt.search_document(limit=1000)
+```
+
+### 3. Handle Errors Gracefully
+```python
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("bundestag_api")
+
+# The package will log warnings and errors automatically
+```
+
+### 4. Combine with Data Analysis Libraries
+```python
+import pandas as pd
+import numpy as np
+from collections import Counter
+
+# Get data as pandas DataFrame
+df = bt.search_document(return_format="pandas", limit=500)
+
+# Analyze document types
+doc_types = Counter(df['drucksachetyp'])
+print(doc_types.most_common(5))
+
+# Time series analysis
+df['datum'] = pd.to_datetime(df['datum'])
+monthly_counts = df.groupby(df['datum'].dt.to_period('M')).size()
+```
+
+## Complete API Reference
+
+### Search Functions
+- `search_document(**filters)` - Find documents
+- `search_procedure(**filters)` - Find legislative procedures  
+- `search_activity(**filters)` - Find parliamentary activities
+- `search_person(**filters)` - Find parliamentarians
+- `search_plenaryprotocol(**filters)` - Find session protocols
+- `search_procedureposition(**filters)` - Find procedure steps
+
+### Get Functions (by ID)
+- `get_document(btid, **options)` - Get specific documents
+- `get_procedure(btid, **options)` - Get specific procedures
+- `get_activity(btid, **options)` - Get specific activities  
+- `get_person(btid, **options)` - Get specific persons
+- `get_plenaryprotocol(btid, **options)` - Get specific protocols
+- `get_procedureposition(btid, **options)` - Get specific procedure steps
+
+## Common Issues & Solutions
+
+**Memory issues with large datasets?**
+- Use smaller `limit` values and process in chunks
+- Use `return_format="pandas"` for better memory efficiency
+
+**Getting empty results?**
+- Check date formats (YYYY-MM-DD)
+- Verify institution codes (BT, BR, BV, EK)
+- Start with broader searches, then add filters
+
+**Need full document text?**
+- Set `fulltext=True` for documents and protocols
+- Note: Full text significantly increases response size
+
+## Contributing
+
+Contributions are welcome! Please check the [GitHub repository](https://github.com/jschibberges/Bundestag-API) for current issues and development guidelines.
+
+## License
+
+This project is licensed under the MIT License. See the LICENSE file for details.
+
+## Support
+
+- GitHub Issues: [Report bugs or request features](https://github.com/jschibberges/Bundestag-API/issues)
+- Official API Documentation: [Bundestag.de API](https://dip.bundestag.de/über-dip/hilfe/api)
+- Email for API keys: [parlamentsdokumentation@bundestag.de](mailto:parlamentsdokumentation@bundestag.de)
+
+---
+
+*Made for data scientists who want to analyze German parliamentary data without the complexity of raw API calls.*

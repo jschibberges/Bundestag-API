@@ -59,8 +59,8 @@ class btaConnection:
 
         today = datetime.now()
         if apikey is None and date_expiry.date() < today.date():
-            logger.error("You need to supply your own API key.")
-        elif apikey is None and date_expiry.date() > today.date():
+            raise ValueError("The general API key has expired. Please provide your own API key via btaConnection(apikey='your_key').")
+        elif apikey is None and date_expiry.date() >= today.date():
             self.apikey = GEN_APIKEY
             logger.info("General API key used. It is valid until 31.05.2026.")
         elif apikey is not None:
@@ -115,12 +115,338 @@ class btaConnection:
         if not isinstance(param_value, list):
             raise ValueError(f"{param_name} must be an integer or a list of integers.")
         if not all(isinstance(item, int) for item in param_value):
+            # Check for floats explicitly to avoid silent truncation
+            if any(isinstance(item, float) for item in param_value):
+                raise ValueError(f"All items in {param_name} must be convertible to integers. Floats are not allowed to prevent data loss.")
             try:
-                # Attempt to convert all items to int
+                # Attempt to convert all items to int (e.g., string integers like "123")
                 return [int(item) for item in param_value]
             except (ValueError, TypeError) as e:
                 raise ValueError(f"All items in {param_name} must be convertible to integers.") from e
         return param_value
+
+    def _validate_basic_params(self, resource: Resource, return_format: str, limit: int,
+                              institution: Optional[str], fulltext: bool) -> Resource:
+        """Validate basic query parameters and adjust resource for fulltext if needed."""
+        INSTITUTIONS = ["BT", "BR", "BV", "EK"]
+
+        # Validate resource
+        if resource not in Resource.__args__:
+            raise ValueError("No or wrong resource")
+
+        # Validate return format
+        if return_format not in ["json", "xml", "object", "pandas"]:
+            raise ValueError("return_format: Not a correct format!")
+
+        # Validate institution
+        if institution is not None and institution not in INSTITUTIONS:
+            raise ValueError("Unknown institution")
+
+        # Validate limit
+        if not isinstance(limit, int) or limit <= 0:
+            raise ValueError("limit must be an integer larger than zero")
+
+        # Handle fulltext resource routing
+        if fulltext:
+            if resource in ("drucksache", "plenarprotokoll"):
+                resource = cast(Resource, resource + "-text")
+            elif resource not in ("drucksache-text", "plenarprotokoll-text"):
+                raise ValueError("fulltext is only supported for 'drucksache' and 'plenarprotokoll'")
+
+        return resource
+
+    def _validate_reference_ids(self, resource: Resource, drucksacheID: Optional[int],
+                                plenaryprotocolID: Optional[int], processID: Optional[int],
+                                activityID: Optional[int]) -> dict:
+        """Validate reference ID parameters (drucksacheID, plenaryprotocolID, etc.)"""
+
+        # Check mutual exclusivity
+        non_none_count = sum(arg is not None for arg in [
+            plenaryprotocolID, drucksacheID, processID, activityID
+        ])
+        if non_none_count > 1:
+            raise ValueError(
+                "Can't select more than one of drucksacheID, plenaryprotocolID, processID, and activityID"
+            )
+
+        # Validate drucksacheID and plenaryprotocolID
+        if resource not in ["aktivitaet", "vorgang", "vorgangsposition"]:
+            if drucksacheID is not None:
+                raise ValueError(
+                    "drucksacheID must be combined with resource 'aktivitaet', 'vorgang' or 'vorgangsposition'"
+                )
+            if plenaryprotocolID is not None:
+                raise ValueError(
+                    "plenaryprotocolID must be combined with resource 'aktivitaet', 'vorgang' or 'vorgangsposition'"
+                )
+        else:
+            if drucksacheID is not None and not isinstance(drucksacheID, int):
+                raise ValueError("drucksacheID must be an integer")
+            if plenaryprotocolID is not None and not isinstance(plenaryprotocolID, int):
+                raise ValueError("plenaryprotocolID must be an integer")
+
+        # Validate processID
+        if resource != "vorgangsposition":
+            if processID is not None:
+                raise ValueError("processID must be combined with resource 'vorgangsposition'")
+        else:
+            if processID is not None and not isinstance(processID, int):
+                raise ValueError("processID must be an integer")
+
+        # Validate activityID
+        if activityID is not None:
+            if resource != "vorgangsposition":
+                raise ValueError("activityID must be combined with resource 'vorgangsposition'")
+            if not isinstance(activityID, int):
+                raise ValueError("activityID must be an integer")
+
+        return {
+            'drucksacheID': drucksacheID,
+            'plenaryprotocolID': plenaryprotocolID,
+            'processID': processID,
+            'activityID': activityID
+        }
+
+    def _validate_resource_specific_params(self, resource: Resource, params: dict):
+        """Validate that parameters are only used with compatible resources.
+
+        Raises ValueError if a parameter is used with an incompatible resource.
+        """
+        validations = [
+            ('person_name', ["aktivitaet", "person"],
+             "person_name can only be used with resource 'aktivitaet' or 'person'"),
+            ('personID', ["aktivitaet"],
+             "personID can only be used with resource 'aktivitaet'"),
+            ('gesta_id', ["vorgang"],
+             "gesta_id can only be used with resource 'vorgang'"),
+            ('procedure_positionID', ["aktivitaet"],
+             "procedure_positionID can only be used with resource 'aktivitaet'"),
+            ('consultation_status', ["vorgang"],
+             "consultation_status can only be used with resource 'vorgang'"),
+            ('publication_reference', ["vorgang"],
+             "publication_reference can only be used with resource 'vorgang'"),
+            ('initiative', ["vorgang"],
+             "initiative can only be used with resource 'vorgang'"),
+        ]
+
+        for param_name, allowed_resources, error_msg in validations:
+            if params.get(param_name) is not None and resource not in allowed_resources:
+                raise ValueError(error_msg)
+
+        # Special case: document_number cannot be used with person
+        if params.get('document_number') is not None and resource == "person":
+            raise ValueError("document_number cannot be used with resource 'person'")
+
+        # Special case: document_art
+        if params.get('document_art') is not None and resource not in ["vorgang", "vorgangsposition", "aktivitaet"]:
+            raise ValueError("document_art can only be used with resource 'vorgang', 'vorgangsposition', or 'aktivitaet'")
+
+        # Special case: question_number
+        if params.get('question_number') is not None and resource not in ["vorgang", "vorgangsposition", "aktivitaet"]:
+            raise ValueError("question_number can only be used with resource 'vorgang', 'vorgangsposition', or 'aktivitaet'")
+
+        # Special case: lead_department
+        if params.get('lead_department') is not None and resource not in ["vorgang", "vorgangsposition", "drucksache", "drucksache-text"]:
+            raise ValueError("lead_department can only be used with 'vorgang', 'vorgangsposition', 'drucksache', or 'drucksache-text'")
+
+        # Special case: originator
+        if params.get('originator') is not None and resource not in ["vorgang", "vorgangsposition", "drucksache", "drucksache-text", "aktivitaet"]:
+            raise ValueError("originator can only be used with 'vorgang', 'vorgangsposition', 'drucksache', 'drucksache-text', or 'aktivitaet'")
+
+    def _validate_and_normalize_params(self, resource: Resource, **params) -> dict:
+        """Validate all filter parameters and normalize them to correct types.
+
+        Returns a dictionary of validated parameters ready for API payload.
+        """
+        validated = {}
+
+        # Validate ID parameters
+        validated['fid'] = self._validate_int_list_param(params.get('fid'), "fid")
+
+        # Validate datetime parameters
+        validated['updated_since'] = to_iso8601(params.get('updated_since')) if params.get('updated_since') else None
+        validated['updated_until'] = to_iso8601(params.get('updated_until')) if params.get('updated_until') else None
+
+        # Validate list parameters
+        validated['descriptor'] = self._validate_str_list_param(params.get('descriptor'), "descriptor")
+        validated['sachgebiet'] = self._validate_str_list_param(params.get('sachgebiet'), "sachgebiet")
+        validated['legislative_period'] = self._validate_int_list_param(params.get('legislative_period'), "legislative_period")
+        validated['person_name'] = self._validate_str_list_param(params.get('person_name'), "person_name")
+        validated['personID'] = self._validate_int_list_param(params.get('personID'), "personID")
+        validated['document_number'] = self._validate_str_list_param(params.get('document_number'), "document_number")
+        validated['question_number'] = self._validate_str_list_param(params.get('question_number'), "question_number")
+        validated['gesta_id'] = self._validate_str_list_param(params.get('gesta_id'), "gesta_id")
+        validated['procedure_positionID'] = self._validate_int_list_param(params.get('procedure_positionID'), "procedure_positionID")
+        validated['consultation_status'] = self._validate_str_list_param(params.get('consultation_status'), "consultation_status")
+        validated['publication_reference'] = self._validate_str_list_param(params.get('publication_reference'), "publication_reference")
+        validated['initiative'] = self._validate_str_list_param(params.get('initiative'), "initiative")
+        validated['lead_department'] = self._validate_str_list_param(params.get('lead_department'), "lead_department")
+        validated['originator'] = self._validate_str_list_param(params.get('originator'), "originator")
+
+        # Resource-specific validation for title and process_type
+        if resource in ["drucksache", "drucksache-text", "vorgang", "vorgangsposition"]:
+            validated['title'] = self._validate_str_list_param(params.get('title'), "title")
+            validated['process_type'] = self._validate_str_list_param(params.get('process_type'), "process_type")
+            validated['process_type_notation'] = self._validate_int_list_param(params.get('process_type_notation'), "process_type_notation")
+
+            drucksache_type = params.get('drucksache_type')
+            if drucksache_type is not None and not isinstance(drucksache_type, str):
+                raise ValueError("drucksache_type must be a string.")
+            validated['drucksache_type'] = drucksache_type
+        else:
+            # Ensure these params aren't used with wrong resources
+            if params.get('title') is not None:
+                raise ValueError("Title must be combined with a document or process")
+            if params.get('drucksache_type') is not None:
+                raise ValueError("Drucksache type must be combined with a document or process")
+            validated['title'] = None
+            validated['process_type'] = None
+            validated['process_type_notation'] = None
+            validated['drucksache_type'] = None
+
+        # Validate reference ID parameters and their resource compatibility
+        validated.update(self._validate_reference_ids(
+            resource=resource,
+            drucksacheID=params.get('drucksacheID'),
+            plenaryprotocolID=params.get('plenaryprotocolID'),
+            processID=params.get('processID'),
+            activityID=params.get('activityID')
+        ))
+
+        # Add simple passthrough params (before resource-specific validation)
+        validated['date_start'] = params.get('date_start')
+        validated['date_end'] = params.get('date_end')
+        validated['institution'] = params.get('institution')
+        validated['document_art'] = params.get('document_art')
+
+        # Validate document_art value
+        if validated['document_art'] is not None and validated['document_art'] not in ["Drucksache", "Plenarprotokoll"]:
+            raise ValueError("document_art must be either 'Drucksache' or 'Plenarprotokoll'")
+
+        # Validate resource-specific parameters
+        self._validate_resource_specific_params(resource, validated)
+
+        return validated
+
+    def _build_api_payload(self, validated_params: dict) -> dict:
+        """Build the API request payload from validated parameters."""
+        return {
+            "apikey": self.apikey,
+            "format": "json",  # Will be handled separately for object/pandas formats
+            "f.id": validated_params.get('fid'),
+            "f.datum.start": validated_params.get('date_start'),
+            "f.datum.end": validated_params.get('date_end'),
+            "f.aktualisiert.start": validated_params.get('updated_since'),
+            "f.aktualisiert.end": validated_params.get('updated_until'),
+            "f.drucksache": validated_params.get('drucksacheID'),
+            "f.plenarprotokoll": validated_params.get('plenaryprotocolID'),
+            "f.vorgang": validated_params.get('processID'),
+            "f.zuordnung": validated_params.get('institution'),
+            "f.deskriptor": validated_params.get('descriptor'),
+            "f.sachgebiet": validated_params.get('sachgebiet'),
+            "f.drucksachetyp": validated_params.get('drucksache_type'),
+            "f.vorgangstyp": validated_params.get('process_type'),
+            "f.vorgangstyp_notation": validated_params.get('process_type_notation'),
+            "f.titel": validated_params.get('title'),
+            "f.aktivitaet": validated_params.get('activityID'),
+            "f.wahlperiode": validated_params.get('legislative_period'),
+            "f.person": validated_params.get('person_name'),
+            "f.person_id": validated_params.get('personID'),
+            "f.dokumentnummer": validated_params.get('document_number'),
+            "f.dokumentart": validated_params.get('document_art'),
+            "f.frage_nummer": validated_params.get('question_number'),
+            "f.gesta": validated_params.get('gesta_id'),
+            "f.vorgangsposition_id": validated_params.get('procedure_positionID'),
+            "f.beratungsstand": validated_params.get('consultation_status'),
+            "f.verkuendung_fundstelle": validated_params.get('publication_reference'),
+            "f.initiative": validated_params.get('initiative'),
+            "f.ressort_fdf": validated_params.get('lead_department'),
+            "f.urheber": validated_params.get('originator'),
+            "cursor": None
+        }
+
+    def _execute_paginated_query(self, resource: Resource, payload: dict, limit: int) -> List[dict]:
+        """Execute the API query with automatic pagination."""
+        BASE_URL = "https://search.dip.bundestag.de/api/v1/"
+        r_url = BASE_URL + resource
+
+        data = []
+        continue_pagination = True
+
+        while continue_pagination:
+            r = self.session.get(r_url, params=payload, timeout=30)
+            logger.debug(r.url)
+
+            if r.status_code == requests.codes.ok:
+                content = r.json()
+                documents_on_page = content.get("documents", [])
+
+                if content.get("numFound", 0) == 0:
+                    logging.info("No data was returned.")
+                    continue_pagination = False
+                else:
+                    data.extend(documents_on_page)
+                    next_cursor = content.get("cursor")
+
+                    # Stop paginating if limit reached or no more pages
+                    if len(data) >= limit:
+                        data = data[0:limit]
+                        continue_pagination = False
+                    elif not next_cursor or payload["cursor"] == next_cursor:
+                        continue_pagination = False
+                    else:
+                        payload["cursor"] = next_cursor
+
+            elif r.status_code == 400:
+                msg = f"A syntax error occurred. Code {r.status_code}: {r.reason}"
+                logger.error(msg)
+                raise ValueError(f"Bad request to Bundestag API: {r.reason}")
+
+            elif r.status_code == 401:
+                msg = f"An authorization error occurred. Likely an error with your API key. Code {r.status_code}: {r.reason}"
+                logger.error(msg)
+                raise ValueError(f"Authorization failed. Check your API key: {r.reason}")
+
+            elif r.status_code == 404:
+                msg = f"The API is not reachable. Code {r.status_code}: {r.reason}"
+                logger.error(msg)
+                raise ConnectionError(f"Bundestag API not reachable: {r.reason}")
+
+            else:
+                msg = f"An error occurred. Code {r.status_code}: {r.reason}"
+                logger.error(msg)
+                raise requests.HTTPError(f"HTTP {r.status_code}: {r.reason}")
+
+        if len(data) == 0:
+            logger.info("No data was returned.")
+
+        return data
+
+    def _format_results(self, data: List[dict], return_format: str, resource: Resource) -> Union[List[Any], pd.DataFrame]:
+        """Format the query results according to the requested return format."""
+
+        # Handle object format
+        if return_format == "object":
+            model_map = {
+                "aktivitaet": Aktivitaet,
+                "drucksache": Drucksache,
+                "drucksache-text": Drucksache,
+                "person": Person,
+                "plenarprotokoll": Plenarprotokoll,
+                "plenarprotokoll-text": Plenarprotokoll,
+                "vorgang": Vorgang,
+                "vorgangsposition": Vorgangsposition,
+            }
+            model_class = model_map.get(resource)
+            if model_class:
+                return [model_class(item) for item in data]
+
+        # Handle pandas format
+        if return_format == "pandas":
+            return pd.json_normalize(data)
+
+        # Default: return JSON (list of dicts)
+        return data
 
     def query(self,
               resource: Resource,
@@ -244,229 +570,54 @@ class btaConnection:
             originator: str/list, optional
                 Filter by the originator (Urheber).
             fulltext: boolean
-                Whether the fulltext (if available) should be requested or not. Default is False    
+                Whether the fulltext (if available) should be requested or not. Default is False
 
         """
 
-        BASE_URL = "https://search.dip.bundestag.de/api/v1/"
-        RESOURCETYPES = ["aktivitaet", "drucksache", "drucksache-text", "person",
-                         "plenarprotokoll", "plenarprotokoll-text", "vorgang",
-                         "vorgangsposition"]
-        INSTITUTIONS = ["BT", "BR", "BV", "EK"]
-        # Validate resource
-        if resource not in Resource.__args__:
-            raise ValueError("No or wrong resource")
-        # Validate fid
-        if fid is not None:
-            if isinstance(fid, int):
-                fid = [fid]
-            if not isinstance(fid, list):
-                raise Exception("fid must be int or a list of ints.")
-            if all(isinstance(item, int) for item in fid) is False:
-                try:
-                    fid = [int(item) for item in fid]
-                except ValueError as e:
-                    raise Exception("IDs must be integers: {}".format(e)) from None
-        # The 'fid' list will be handled correctly by the requests library.
-        if return_format not in ["json", "xml", "object", "pandas"]:
-            raise ValueError("return_format: Not a correct format!")
-        if institution is not None and institution not in INSTITUTIONS:
-            raise ValueError("Unknown institution")
-        if resource not in ["aktivitaet", "vorgang", "vorgangsposition"]:
-            if drucksacheID is not None:
-                raise ValueError(
-                    "drucksacheID must be combined with resource 'aktivitaet', 'vorgang' or 'vorgangsposition'")
-            if plenaryprotocolID is not None:
-                raise ValueError(
-                    "plenaryprotocolID must be combined with resource 'aktivitaet', 'vorgang' or 'vorgangsposition'")
-        elif resource in ["aktivitaet", "vorgang", "vorgangsposition"]:
-            if drucksacheID is not None and not isinstance(drucksacheID, int):
-                raise ValueError("drucksacheID must be an integer")
-            if plenaryprotocolID is not None and not isinstance(plenaryprotocolID, int):
-                raise ValueError("plenaryprotocolID must be an integer")
-        if resource not in ["vorgangsposition"]:
-            if processID is not None:
-                raise ValueError(
-                    "processID must be combined with resource 'vorgangsposition'")
-        elif resource in ["vorgangsposition"]:
-            if processID is not None and not isinstance(processID, int):
-                raise ValueError("processID must be an integer")
-        if resource in ["drucksache", "drucksache-text", "vorgang", "vorgangsposition"]:
-            title = self._validate_str_list_param(title, "title")
-            process_type = self._validate_str_list_param(process_type, "process_type")
-            process_type_notation = self._validate_int_list_param(process_type_notation, "process_type_notation")
-            if drucksache_type is not None:
-                if not isinstance(drucksache_type, str):
-                    raise ValueError("drucksache_type must be a string.")
-        if resource not in ["drucksache", "drucksache-text", "vorgang", "vorgangsposition"]:
-            if title is not None:
-                raise ValueError("Title must be combined with a document or process")
-            if drucksache_type is not None:
-                raise ValueError("Drucksache type must be combined with a document or process")
-        if activityID is not None:
-            if resource != "vorgangsposition":
-                raise ValueError("activityID must be combined with resource 'vorgangsposition'")
-            if not isinstance(activityID, int):
-                raise ValueError("activityID must be an integer")
-        # Validate that only one of the possible IDs is given and raise an error otherwise
-        non_none_count = sum(arg is not None for arg in [
-                             plenaryprotocolID, drucksacheID, processID, activityID])
-        if non_none_count > 1:
-            raise ValueError(
-                "Can't select more than one of drucksacheID, plenaryprotocolID, processID, and activityID")
-        # Validate the limit parameter is an integer and positive
-        if not isinstance(limit, int) or limit <= 0:
-            raise ValueError("limit must be an integer larger than zero")
-        # Validate updated_since and updated_until are both in ISO 8601 format
-        if updated_since is not None:
-            updated_since = to_iso8601(updated_since)
-        if updated_until is not None:
-            updated_until = to_iso8601(updated_until)
-        # Validate descriptors
-        descriptor = self._validate_str_list_param(descriptor, "descriptor")
-        # Validate sachgebiet
-        sachgebiet = self._validate_str_list_param(sachgebiet, "sachgebiet")
-        # Validate new params
-        legislative_period = self._validate_int_list_param(legislative_period, "legislative_period")
-        legislative_period = self._validate_int_list_param(legislative_period, "legislative_period") # Applies to all resources
-        person_name = self._validate_str_list_param(person_name, "person_name")
-        personID = self._validate_int_list_param(personID, "personID")
-        document_number = self._validate_str_list_param(document_number, "document_number")
-        if document_art is not None and document_art not in ["Drucksache", "Plenarprotokoll"]:
-            raise ValueError("document_art must be either 'Drucksache' or 'Plenarprotokoll'")
-        question_number = self._validate_str_list_param(question_number, "question_number")
-        gesta_id = self._validate_str_list_param(gesta_id, "gesta_id")
-        procedure_positionID = self._validate_int_list_param(procedure_positionID, "procedure_positionID")
-        consultation_status = self._validate_str_list_param(consultation_status, "consultation_status")
-        publication_reference = self._validate_str_list_param(publication_reference, "publication_reference")
-        initiative = self._validate_str_list_param(initiative, "initiative")
-        lead_department = self._validate_str_list_param(lead_department, "lead_department")
-        originator = self._validate_str_list_param(originator, "originator")
+        # 1. Validate basic parameters
+        resource = self._validate_basic_params(resource, return_format, limit, institution, fulltext)
 
-        # Resource-specific validation for parameters
-        if person_name is not None and resource not in ["aktivitaet", "person"]:
-            raise ValueError("person_name can only be used with resource 'aktivitaet' or 'person'")
-        if personID is not None and resource not in ["aktivitaet"]:
-            raise ValueError("personID can only be used with resource 'aktivitaet'")
-        if document_number is not None and resource in ["person"]:
-            raise ValueError("document_number cannot be used with resource 'person'")
-        if document_art is not None and resource not in ["vorgang", "vorgangsposition", "aktivitaet"]:
-            raise ValueError("document_art can only be used with resource 'vorgang', 'vorgangsposition', or 'aktivitaet'")
-        if question_number is not None and resource not in ["vorgang", "vorgangsposition", "aktivitaet"]:
-            raise ValueError("question_number can only be used with resource 'vorgang', 'vorgangsposition', or 'aktivitaet'")
-        if gesta_id is not None and resource not in ["vorgang"]:
-            raise ValueError("gesta_id can only be used with resource 'vorgang'")
-        if procedure_positionID is not None and resource not in ["aktivitaet"]:
-            raise ValueError("procedure_positionID can only be used with resource 'aktivitaet'")
-        if consultation_status is not None and resource not in ["vorgang"]:
-            raise ValueError("consultation_status can only be used with resource 'vorgang'")
-        if publication_reference is not None and resource not in ["vorgang"]:
-            raise ValueError("publication_reference can only be used with resource 'vorgang'")
-        if initiative is not None and resource not in ["vorgang"]:
-            raise ValueError("initiative can only be used with resource 'vorgang'")
-        if lead_department is not None and resource not in ["vorgang", "vorgangsposition", "drucksache", "drucksache-text"]:
-            raise ValueError("lead_department can only be used with 'vorgang', 'vorgangsposition', 'drucksache', or 'drucksache-text'")
-        if originator is not None and resource not in ["vorgang", "vorgangsposition", "drucksache", "drucksache-text", "aktivitaet"]:
-            raise ValueError("originator can only be used with 'vorgang', 'vorgangsposition', 'drucksache', 'drucksache-text', or 'aktivitaet'")
+        # 2. Validate and normalize all filter parameters
+        validated_params = self._validate_and_normalize_params(
+            resource=resource,
+            fid=fid,
+            date_start=date_start,
+            date_end=date_end,
+            updated_since=updated_since,
+            updated_until=updated_until,
+            drucksacheID=drucksacheID,
+            plenaryprotocolID=plenaryprotocolID,
+            processID=processID,
+            descriptor=descriptor,
+            sachgebiet=sachgebiet,
+            drucksache_type=drucksache_type,
+            process_type=process_type,
+            process_type_notation=process_type_notation,
+            title=title,
+            activityID=activityID,
+            legislative_period=legislative_period,
+            person_name=person_name,
+            personID=personID,
+            document_number=document_number,
+            document_art=document_art,
+            question_number=question_number,
+            gesta_id=gesta_id,
+            procedure_positionID=procedure_positionID,
+            consultation_status=consultation_status,
+            publication_reference=publication_reference,
+            initiative=initiative,
+            lead_department=lead_department,
+            originator=originator
+        )
 
-        if fulltext:
-            if resource in ("drucksache", "plenarprotokoll"):
-                resource = cast(Resource, resource + "-text")
-            elif resource not in ("drucksache-text", "plenarprotokoll-text"):
-                raise ValueError("fulltext is only supported for 'drucksache' and 'plenarprotokoll'")
+        # 3. Build API payload
+        payload = self._build_api_payload(validated_params)
 
+        # 4. Execute paginated query
+        data = self._execute_paginated_query(resource, payload, limit)
 
-        r_url = BASE_URL+resource
-        return_object = False
-        if return_format == "object":
-            return_format = "json"
-            return_object = True
-
-        payload = {"apikey": self.apikey,
-                   "format": return_format,
-                   "f.id": fid,
-                   "f.datum.start": date_start,
-                   "f.datum.end": date_end,
-                   "f.aktualisiert.start": updated_since,
-                   "f.aktualisiert.end": updated_until,
-                   "f.drucksache": drucksacheID,
-                   "f.plenarprotokoll": plenaryprotocolID,
-                   "f.vorgang": processID,
-                   "f.zuordnung": institution,
-                   "f.deskriptor": descriptor,
-                   "f.sachgebiet": sachgebiet,
-                   "f.drucksachetyp": drucksache_type,
-                   "f.vorgangstyp": process_type,
-                   "f.vorgangstyp_notation": process_type_notation,
-                   "f.titel": title,
-                   "f.aktivitaet": activityID,
-                   "f.wahlperiode": legislative_period,
-                   "f.person": person_name,
-                   "f.person_id": personID,
-                   "f.dokumentnummer": document_number,
-                   "f.dokumentart": document_art,
-                   "f.frage_nummer": question_number,
-                   "f.gesta": gesta_id,
-                   "f.vorgangsposition_id": procedure_positionID,
-                   "f.beratungsstand": consultation_status,
-                   "f.verkuendung_fundstelle": publication_reference,
-                   "f.initiative": initiative,
-                   "f.ressort_fdf": lead_department,
-                   "f.urheber": originator,
-                   "cursor": None}
-        data = []
-        prs = True
-        while prs:
-            r = self.session.get(r_url, params=payload, timeout=30)
-            logger.debug(r.url)
-            if r.status_code == requests.codes.ok:
-                content = r.json()
-                documents_on_page = content.get("documents", [])
-
-                if content.get("numFound", 0) == 0:
-                    logging.info("No data was returned.")
-                    prs = False
-                else:
-                    data.extend(documents_on_page)
-                    next_cursor = content.get("cursor")
-
-                    # Stop paginating if the limit is reached, there's no next cursor,
-                    # or the API signals the last page by returning the same cursor.
-                    if len(data) >= limit:
-                        data = data[0:limit]
-                        prs = False
-                    elif not next_cursor or payload["cursor"] == next_cursor:
-                        prs = False
-                    else:
-                        payload["cursor"] = next_cursor
-            elif r.status_code == 400:
-                logger.error("A syntax error occurred. Code {code}: {message}".format(
-                    code=r.status_code, message=r.reason))
-                prs = False
-            elif r.status_code == 401:
-                logger.error("An authorization error occurred. Likely an error with your API key. Code {code}: {message}".format(
-                    code=r.status_code, message=r.reason))
-                prs = False
-            elif r.status_code == 404:
-                logger.error("The API is not reachable. Code {code}: {message}".format(
-                    code=r.status_code, message=r.reason))
-                prs = False
-            else:
-                logger.error("An error occurred. Code {code}: {message}".format(
-                    code=r.status_code, message=r.reason))
-                prs = False
-        if return_object:
-            model_map = {
-                "aktivitaet": Aktivitaet, "drucksache": Drucksache, "drucksache-text": Drucksache, "person": Person, "plenarprotokoll": Plenarprotokoll, "plenarprotokoll-text": Plenarprotokoll, "vorgang": Vorgang, "vorgangsposition": Vorgangsposition,
-            }
-            model_class = model_map.get(resource)
-            if model_class:
-                data = [model_class(item) for item in data]
-        if return_format == "pandas":
-            return pd.json_normalize(data)
-        if len(data) == 0:
-            logger.info("No data was returned.")
-        return data
+        # 5. Format and return results
+        return self._format_results(data, return_format, resource)
 
     # The following two methods are used to construct the specific search and get methods
     def _search(self, resource: Resource, **filters):

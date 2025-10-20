@@ -153,6 +153,36 @@ for i in range(0, len(all_documents), 100):
     process_documents(chunk)
 ```
 
+### Parallel Processing
+
+⚠️ **Important Rate Limit Information**
+
+The Bundestag API has a **maximum of 25 concurrent requests** limit. When using parallel processing (threading, multiprocessing, asyncio), you must respect this limit to avoid triggering bot protection.
+
+#### API Key Considerations
+
+**Generic API Key (default)**
+- Shared potentially by all users globally
+- More likely to hit rate limits
+
+**Personal API Key** (recommended for production)
+- Dedicated quota for your application
+- Better performance and reliability
+- Get your key at [dip.bundestag.de](https://dip.bundestag.de/)
+
+#### Bot Protection Errors
+
+If you encounter `ConnectionError: Bot protection detected (Enodia challenge)`, this means:
+- Too many concurrent requests (>25)
+- Too many requests per second
+- The shared generic API key is overloaded
+
+**Solutions:**
+1. Reduce `max_workers` (try 5 or less)
+2. Add `time.sleep()` delays between requests
+3. Use a personal API key
+4. Process data in smaller batches
+
 ## Data Structure Examples
 
 ### Document Structure

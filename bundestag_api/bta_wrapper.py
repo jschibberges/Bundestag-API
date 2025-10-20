@@ -62,7 +62,13 @@ class btaConnection:
             raise ValueError("The general API key has expired. Please provide your own API key via btaConnection(apikey='your_key').")
         elif apikey is None and date_expiry.date() >= today.date():
             self.apikey = GEN_APIKEY
-            logger.info("General API key used. It is valid until 31.05.2026.")
+            logger.warning(
+                "Using shared generic API key. This key is potentially used by many users. "
+                "The API allows max 25 concurrent requests. When using parallel processing "
+                "(ThreadPoolExecutor, multiprocessing, etc.), limit workers to avoid triggering "
+                "bot protection. For better performance, get a personal API key at "
+                "https://dip.bundestag.de/"
+            )
         elif apikey is not None:
             if not isinstance(apikey, str):
                 raise ValueError("API key needs to be a string.")
@@ -70,7 +76,7 @@ class btaConnection:
                 raise ValueError("apikey looks malformed (too short).")
             else:
                 self.apikey = apikey
-                logger.debug("Personal API key is used.")
+                logger.info("Using personal API key. API allows max 25 concurrent requests.")
         self.session = self._build_session()
 
 
@@ -398,9 +404,25 @@ class btaConnection:
                         payload["cursor"] = next_cursor
 
             elif r.status_code == 400:
-                msg = f"A syntax error occurred. Code {r.status_code}: {r.reason}"
-                logger.error(msg)
-                raise ValueError(f"Bad request to Bundestag API: {r.reason}")
+                # Check if this is an Enodia challenge/bot protection issue
+                if '.enodia' in r.url or '/challenge' in r.url:
+                    msg = (
+                        "Bot protection detected (Enodia challenge). The Bundestag API blocked this request. "
+                        "Possible causes:\n"
+                        "  • Too many parallel requests (API limit: 25 concurrent)\n"
+                        "  • Too many requests per second\n"
+                        "  • Shared generic API key is being used by too many people/scripts\n"
+                        "Solutions:\n"
+                        "  1. Reduce parallel workers (e.g., max_workers=5 in ThreadPoolExecutor)\n"
+                        "  2. Add delays between requests (e.g., time.sleep(0.1))\n"
+                        "  3. Get a personal API key at https://dip.bundestag.de/\n"
+                    )
+                    logger.error(msg)
+                    raise ConnectionError(msg)
+                else:
+                    msg = f"A syntax error occurred. Code {r.status_code}: {r.reason}"
+                    logger.error(msg)
+                    raise ValueError(f"Bad request to Bundestag API: {r.reason}")
 
             elif r.status_code == 401:
                 msg = f"An authorization error occurred. Likely an error with your API key. Code {r.status_code}: {r.reason}"

@@ -5,6 +5,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 import logging
 import time
+import random
 import pandas as pd
 from typing import Any, Dict, Iterable, List, Optional, Union, Literal, cast
 from .models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, Plenarprotokoll
@@ -52,7 +53,7 @@ class btaConnection:
         Retrieves plenary protocols by ID.
     """
 
-    def __init__(self, apikey=None, delay: float = 0.0):
+    def __init__(self, apikey=None, delay: float = 0.0, session: Optional[requests.Session] = None):
         GEN_APIKEY = "OSOegLs.PR2lwJ1dwCeje9vTj7FPOt3hvpYKtwKkhw"
 
         DATE_GEN_APIKEY = "31.05.2026"
@@ -81,7 +82,13 @@ class btaConnection:
         if not isinstance(delay, (int, float)) or delay < 0:
             raise ValueError("delay must be a non-negative number of seconds.")
         self.delay = float(delay)
-        self.session = self._build_session()
+        if session is not None:
+            if not isinstance(session, requests.Session):
+                raise ValueError("session must be a requests.Session instance (or subclass).")
+            self._apply_session_headers(session)
+            self.session = session
+        else:
+            self.session = self._build_session()
 
 
     def __str__(self):
@@ -90,7 +97,16 @@ class btaConnection:
     def __repr__(self):
         return "API key: "+str(self.apikey)
 
-    def _build_session(self):
+    def _apply_session_headers(self, s: requests.Session) -> None:
+        """Apply the standard request headers to a session."""
+        s.headers.update({
+            'User-Agent': 'bundestag_api/1.0',
+            'Accept': 'application/json',
+            'Accept-Encoding': 'gzip, deflate',
+            'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
+        })
+
+    def _build_session(self) -> requests.Session:
         s = requests.Session()
         retry = Retry(
             total=3,
@@ -102,11 +118,7 @@ class btaConnection:
         adapter = HTTPAdapter(max_retries=retry)
         s.mount('https://', adapter)
         s.mount('http://', adapter)
-        s.headers.update({
-            'User-Agent': 'bundestag_api/1.0',
-            'Accept': 'application/json',
-            'Accept-Encoding': 'gzip, deflate',
-        })
+        self._apply_session_headers(s)
         return s
 
     def _validate_str_list_param(self, param_value: Optional[Union[str, List[str]]], param_name: str) -> Optional[List[str]]:
@@ -413,7 +425,7 @@ class btaConnection:
                         continue_pagination = False
                     else:
                         payload["cursor"] = next_cursor
-                        time.sleep(self.delay)
+                        time.sleep(self.delay * random.uniform(0.8, 1.2) if self.delay > 0 else 0.0)
 
             elif r.status_code in (400, 403):
                 try:

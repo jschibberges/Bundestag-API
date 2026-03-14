@@ -932,6 +932,7 @@ def test_delay_called_between_pages(monkeypatch, fake_session):
 
     sleep_calls = []
     monkeypatch.setattr("bundestag_api.bta_wrapper.time.sleep", lambda s: sleep_calls.append(s))
+    monkeypatch.setattr("bundestag_api.bta_wrapper.random.uniform", lambda a, b: 1.0)  # disable jitter
 
     c = btaConnection(apikey="testapikey0123456789", delay=0.5)
     c.session = fake_session
@@ -952,3 +953,85 @@ def test_delay_called_between_pages(monkeypatch, fake_session):
 
     # sleep called once — between page 1 and page 2 — with the configured delay
     assert sleep_calls == [0.5]
+
+
+def test_jitter_applied_to_delay(monkeypatch, fake_session):
+    from bundestag_api.bta_wrapper import btaConnection
+
+    sleep_calls = []
+    monkeypatch.setattr("bundestag_api.bta_wrapper.time.sleep", lambda s: sleep_calls.append(s))
+    monkeypatch.setattr("bundestag_api.bta_wrapper.random.uniform", lambda a, b: 1.1)  # fixed jitter
+
+    c = btaConnection(apikey="testapikey0123456789", delay=0.5)
+    c.session = fake_session
+    fake_session.responses = [
+        FakeResponse(200, {
+            "numFound": 20,
+            "documents": [{"id": i} for i in range(10)],
+            "cursor": "page2",
+        }),
+        FakeResponse(200, {
+            "numFound": 20,
+            "documents": [{"id": i} for i in range(10, 20)],
+            "cursor": "page2",
+        }),
+    ]
+
+    c.query(resource="drucksache", limit=20)
+
+    assert len(sleep_calls) == 1
+    assert abs(sleep_calls[0] - 0.55) < 1e-9  # 0.5 * 1.1
+
+
+def test_no_jitter_when_delay_is_zero(monkeypatch, fake_session):
+    from bundestag_api.bta_wrapper import btaConnection
+
+    sleep_calls = []
+    monkeypatch.setattr("bundestag_api.bta_wrapper.time.sleep", lambda s: sleep_calls.append(s))
+
+    c = btaConnection(apikey="testapikey0123456789", delay=0.0)
+    c.session = fake_session
+    fake_session.responses = [
+        FakeResponse(200, {
+            "numFound": 20,
+            "documents": [{"id": i} for i in range(10)],
+            "cursor": "page2",
+        }),
+        FakeResponse(200, {
+            "numFound": 20,
+            "documents": [{"id": i} for i in range(10, 20)],
+            "cursor": "page2",
+        }),
+    ]
+
+    c.query(resource="drucksache", limit=20)
+
+    assert sleep_calls == [0.0]
+
+
+def test_accept_language_header():
+    from bundestag_api.bta_wrapper import btaConnection
+    c = btaConnection(apikey="testapikey0123456789")
+    assert c.session.headers.get("Accept-Language") == "de-DE,de;q=0.9,en;q=0.8"
+
+
+def test_custom_session_is_used():
+    from bundestag_api.bta_wrapper import btaConnection
+    real_session = requests.Session()
+    c = btaConnection(apikey="testapikey0123456789", session=real_session)
+    assert c.session is real_session
+
+
+def test_custom_session_gets_headers():
+    from bundestag_api.bta_wrapper import btaConnection
+    real_session = requests.Session()
+    btaConnection(apikey="testapikey0123456789", session=real_session)
+    assert real_session.headers.get("User-Agent") == "bundestag_api/1.0"
+    assert real_session.headers.get("Accept") == "application/json"
+    assert real_session.headers.get("Accept-Language") == "de-DE,de;q=0.9,en;q=0.8"
+
+
+def test_custom_session_invalid_raises():
+    from bundestag_api.bta_wrapper import btaConnection
+    with pytest.raises(ValueError, match="session must be a requests.Session"):
+        btaConnection(apikey="testapikey0123456789", session="not_a_session")

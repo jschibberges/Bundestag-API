@@ -4,6 +4,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 import logging
+import time
+import random
 import pandas as pd
 from typing import Any, Dict, Iterable, List, Optional, Union, Literal, cast
 from .models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, Plenarprotokoll
@@ -51,7 +53,7 @@ class btaConnection:
         Retrieves plenary protocols by ID.
     """
 
-    def __init__(self, apikey=None):
+    def __init__(self, apikey=None, delay: float = 0.0, session: Optional[requests.Session] = None):
         GEN_APIKEY = "OSOegLs.PR2lwJ1dwCeje9vTj7FPOt3hvpYKtwKkhw"
 
         DATE_GEN_APIKEY = "31.05.2026"
@@ -77,7 +79,16 @@ class btaConnection:
             else:
                 self.apikey = apikey
                 logger.info("Using personal API key. API allows max 25 concurrent requests.")
-        self.session = self._build_session()
+        if not isinstance(delay, (int, float)) or delay < 0:
+            raise ValueError("delay must be a non-negative number of seconds.")
+        self.delay = float(delay)
+        if session is not None:
+            if not isinstance(session, requests.Session):
+                raise ValueError("session must be a requests.Session instance (or subclass).")
+            self._apply_session_headers(session)
+            self.session = session
+        else:
+            self.session = self._build_session()
 
 
     def __str__(self):
@@ -86,16 +97,28 @@ class btaConnection:
     def __repr__(self):
         return "API key: "+str(self.apikey)
 
-    def _build_session(self):
+    def _apply_session_headers(self, s: requests.Session) -> None:
+        """Apply the standard request headers to a session."""
+        s.headers.update({
+            'User-Agent': 'bundestag_api/1.0',
+            'Accept': 'application/json',
+            'Accept-Encoding': 'gzip, deflate',
+            'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
+        })
+
+    def _build_session(self) -> requests.Session:
         s = requests.Session()
-        retry = Retry(total=3,
-                       status_forcelist=(429,500,502,503,504),
-                       allowed_methods=frozenset(['GET']), 
-                       backoff_factor=0.5)
+        retry = Retry(
+            total=3,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset(['GET']),
+            backoff_factor=1.0,
+            respect_retry_after_header=True,
+        )
         adapter = HTTPAdapter(max_retries=retry)
         s.mount('https://', adapter)
         s.mount('http://', adapter)
-        s.headers['User-Agent'] = 'bundestag_api (python)'
+        self._apply_session_headers(s)
         return s
 
     def _validate_str_list_param(self, param_value: Optional[Union[str, List[str]]], param_name: str) -> Optional[List[str]]:
@@ -402,20 +425,29 @@ class btaConnection:
                         continue_pagination = False
                     else:
                         payload["cursor"] = next_cursor
+                        time.sleep(self.delay * random.uniform(0.8, 1.2) if self.delay > 0 else 0.0)
 
-            elif r.status_code == 400:
-                # Check if this is an Enodia challenge/bot protection issue
-                if '.enodia' in r.url or '/challenge' in r.url:
+            elif r.status_code in (400, 403):
+                try:
+                    body = r.text.lower()
+                except Exception:
+                    body = ""
+                bot_signals = (
+                    '.enodia' in r.url
+                    or '/challenge' in r.url
+                    or any(kw in body for kw in ('enodia', 'captcha', 'bot protection', 'access denied'))
+                )
+                if bot_signals or r.status_code == 403:
                     msg = (
-                        "Bot protection detected (Enodia challenge). The Bundestag API blocked this request. "
+                        "Bot protection detected (Enodia challenge). The Bundestag API blocked this request.\n"
                         "Possible causes:\n"
                         "  • Too many parallel requests (API limit: 25 concurrent)\n"
-                        "  • Too many requests per second\n"
-                        "  • Shared generic API key is being used by too many people/scripts\n"
+                        "  • Too many requests per second (no delay between paginated calls)\n"
+                        "  • Shared generic API key is being used by many scripts simultaneously\n"
                         "Solutions:\n"
-                        "  1. Reduce parallel workers (e.g., max_workers=5 in ThreadPoolExecutor)\n"
-                        "  2. Add delays between requests (e.g., time.sleep(0.1))\n"
-                        "  3. Get a personal API key at https://dip.bundestag.de/\n"
+                        "  1. Add a delay: btaConnection(delay=0.5)\n"
+                        "  2. Reduce parallel workers to ≤5 in ThreadPoolExecutor\n"
+                        "  3. Use a personal API key: https://dip.bundestag.de/\n"
                     )
                     logger.error(msg)
                     raise ConnectionError(msg)
@@ -439,6 +471,7 @@ class btaConnection:
                 logger.error(msg)
                 raise requests.HTTPError(f"HTTP {r.status_code}: {r.reason}")
 
+        self._sanitize_pdf_urls(data)
         if len(data) == 0:
             logger.info("No data was returned.")
 
@@ -649,6 +682,43 @@ class btaConnection:
     def _get(self, resource: Resource, btid: Union[int, List[int]], **filters):
         """Generic get: forwards to .query(resource, fid=btid, **filters)."""
         return self.query(resource=resource, fid=btid, **filters)
+
+    def _sanitize_pdf_urls(self, node: Union[dict, List[Any]]) -> None:
+        """
+        Ensure fundstelle.pdf_url values are only returned when all components are present.
+
+        The Bundestag API sometimes returns placeholder strings like 'null' when a PDF
+        reference is incomplete. Those should surface as None for downstream consumers.
+        """
+        if isinstance(node, dict):
+            fundstelle = node.get("fundstelle")
+            if isinstance(fundstelle, dict):
+                pdf_url = fundstelle.get("pdf_url")
+                if self._should_clear_pdf_url(pdf_url):
+                    fundstelle["pdf_url"] = None
+
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    self._sanitize_pdf_urls(value)
+
+        elif isinstance(node, list):
+            for item in node:
+                if isinstance(item, (dict, list)):
+                    self._sanitize_pdf_urls(item)
+
+    @staticmethod
+    def _should_clear_pdf_url(pdf_url: Any) -> bool:
+        """Return True when a pdf_url contains placeholder markers instead of real values."""
+        if not isinstance(pdf_url, str):
+            return False
+
+        stripped = pdf_url.strip()
+        if not stripped:
+            return True
+
+        placeholders = {"null", "none", "undefined"}
+        segments = [segment.lower() for segment in stripped.split("/") if segment]
+        return any(segment in placeholders for segment in segments)
 
     # procedures
     def search_procedure(self, **filters) -> Union[List[Any], pd.DataFrame]:

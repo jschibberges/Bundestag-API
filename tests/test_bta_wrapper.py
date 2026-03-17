@@ -852,6 +852,28 @@ def test_pandas_dataframe_with_nested_structures(conn):
     assert "fundstelle.pdf_url" in df.columns or "fundstelle" in df.columns
 
 
+def test_placeholder_pdf_urls_are_sanitized(conn):
+    """Fundstelle pdf_url should be None when the API returns placeholder 'null' components."""
+    conn.session.responses = [
+        FakeResponse(200, {
+            "numFound": 1,
+            "documents": [
+                {
+                    "id": 42,
+                    "fundstelle": {
+                        "pdf_url": "https://dserver.bundestag.de/brd/null/null",
+                        "dokumentart": None,
+                        "dokumentnummer": None,
+                    },
+                }
+            ],
+        })
+    ]
+
+    results = conn.search_procedureposition(limit=5)
+    assert results[0]["fundstelle"]["pdf_url"] is None
+
+
 def test_concurrent_query_calls_dont_interfere(conn):
     """Multiple query calls should not interfere with each other's state."""
     # First query
@@ -870,3 +892,146 @@ def test_concurrent_query_calls_dont_interfere(conn):
     assert results1 != results2
     assert results1[0]["id"] == 1
     assert results2[0]["id"] == 2
+
+
+# ---- Bot-protection mitigation tests ----
+
+def test_delay_default_is_zero():
+    from bundestag_api.bta_wrapper import btaConnection
+    c = btaConnection(apikey="testapikey0123456789")
+    assert c.delay == 0.0
+
+
+def test_delay_custom_value():
+    from bundestag_api.bta_wrapper import btaConnection
+    c = btaConnection(apikey="testapikey0123456789", delay=0.5)
+    assert c.delay == 0.5
+
+
+def test_delay_invalid_raises():
+    from bundestag_api.bta_wrapper import btaConnection
+    with pytest.raises(ValueError, match="non-negative"):
+        btaConnection(apikey="testapikey0123456789", delay=-1)
+
+
+def test_session_headers():
+    from bundestag_api.bta_wrapper import btaConnection
+    c = btaConnection(apikey="testapikey0123456789")
+    assert c.session.headers.get("User-Agent") == "bundestag_api/1.0"
+    assert c.session.headers.get("Accept") == "application/json"
+
+
+def test_bot_protection_403(conn):
+    conn.session.responses = [FakeResponse(status_code=403, reason="Forbidden")]
+    with pytest.raises(ConnectionError):
+        conn.query(resource="drucksache", limit=1)
+
+
+def test_delay_called_between_pages(monkeypatch, fake_session):
+    from bundestag_api.bta_wrapper import btaConnection
+
+    sleep_calls = []
+    monkeypatch.setattr("bundestag_api.bta_wrapper.time.sleep", lambda s: sleep_calls.append(s))
+    monkeypatch.setattr("bundestag_api.bta_wrapper.random.uniform", lambda a, b: 1.0)  # disable jitter
+
+    c = btaConnection(apikey="testapikey0123456789", delay=0.5)
+    c.session = fake_session
+    fake_session.responses = [
+        FakeResponse(200, {
+            "numFound": 20,
+            "documents": [{"id": i} for i in range(10)],
+            "cursor": "page2",
+        }),
+        FakeResponse(200, {
+            "numFound": 20,
+            "documents": [{"id": i} for i in range(10, 20)],
+            "cursor": "page2",  # same cursor = last page
+        }),
+    ]
+
+    c.query(resource="drucksache", limit=20)
+
+    # sleep called once — between page 1 and page 2 — with the configured delay
+    assert sleep_calls == [0.5]
+
+
+def test_jitter_applied_to_delay(monkeypatch, fake_session):
+    from bundestag_api.bta_wrapper import btaConnection
+
+    sleep_calls = []
+    monkeypatch.setattr("bundestag_api.bta_wrapper.time.sleep", lambda s: sleep_calls.append(s))
+    monkeypatch.setattr("bundestag_api.bta_wrapper.random.uniform", lambda a, b: 1.1)  # fixed jitter
+
+    c = btaConnection(apikey="testapikey0123456789", delay=0.5)
+    c.session = fake_session
+    fake_session.responses = [
+        FakeResponse(200, {
+            "numFound": 20,
+            "documents": [{"id": i} for i in range(10)],
+            "cursor": "page2",
+        }),
+        FakeResponse(200, {
+            "numFound": 20,
+            "documents": [{"id": i} for i in range(10, 20)],
+            "cursor": "page2",
+        }),
+    ]
+
+    c.query(resource="drucksache", limit=20)
+
+    assert len(sleep_calls) == 1
+    assert abs(sleep_calls[0] - 0.55) < 1e-9  # 0.5 * 1.1
+
+
+def test_no_jitter_when_delay_is_zero(monkeypatch, fake_session):
+    from bundestag_api.bta_wrapper import btaConnection
+
+    sleep_calls = []
+    monkeypatch.setattr("bundestag_api.bta_wrapper.time.sleep", lambda s: sleep_calls.append(s))
+
+    c = btaConnection(apikey="testapikey0123456789", delay=0.0)
+    c.session = fake_session
+    fake_session.responses = [
+        FakeResponse(200, {
+            "numFound": 20,
+            "documents": [{"id": i} for i in range(10)],
+            "cursor": "page2",
+        }),
+        FakeResponse(200, {
+            "numFound": 20,
+            "documents": [{"id": i} for i in range(10, 20)],
+            "cursor": "page2",
+        }),
+    ]
+
+    c.query(resource="drucksache", limit=20)
+
+    assert sleep_calls == [0.0]
+
+
+def test_accept_language_header():
+    from bundestag_api.bta_wrapper import btaConnection
+    c = btaConnection(apikey="testapikey0123456789")
+    assert c.session.headers.get("Accept-Language") == "de-DE,de;q=0.9,en;q=0.8"
+
+
+def test_custom_session_is_used():
+    from bundestag_api.bta_wrapper import btaConnection
+    real_session = requests.Session()
+    c = btaConnection(apikey="testapikey0123456789", session=real_session)
+    assert c.session is real_session
+
+
+def test_custom_session_gets_headers():
+    from bundestag_api.bta_wrapper import btaConnection
+    real_session = requests.Session()
+    btaConnection(apikey="testapikey0123456789", session=real_session)
+    assert real_session.headers.get("User-Agent") == "bundestag_api/1.0"
+    assert real_session.headers.get("Accept") == "application/json"
+    assert real_session.headers.get("Accept-Language") == "de-DE,de;q=0.9,en;q=0.8"
+
+
+def test_custom_session_invalid_raises():
+    from bundestag_api.bta_wrapper import btaConnection
+    with pytest.raises(ValueError, match="session must be a requests.Session"):
+        btaConnection(apikey="testapikey0123456789", session="not_a_session")

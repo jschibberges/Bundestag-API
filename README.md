@@ -10,7 +10,7 @@ Perfect for data scientists, researchers, and political analysts who want to ana
 ## What You Can Do
 
 - **Analyze Parliamentary Documents**: Access bills, reports, and official documents
-- **Track Legislative Processes**: Follow how laws move through parliament
+- **Track Legislative Processes**: Follow how laws move through parliament and how they were decided
 - **Follow Parliamentary Debates**: Examine plenary protocols, speeches and other activities
 - **Research Politicians**: Get information about current and former members of parliament
 - **Time Series Analysis**: Filter data by date ranges for trend analysis
@@ -161,7 +161,42 @@ Good to know:
 - Comments are classified by their leading keyword (`kind`: Beifall, Zuruf, Heiterkeit,
   Lachen, Widerspruch, ...). The original wording is always kept in `text` and `comment_text`.
 
-### 5. Member Analysis
+### 5. Decisions and Votes
+
+Every step of a procedure (`vorgangsposition`) can contain decisions ("Beschlussfassung"):
+the Bundestag adopting a bill, the Bundesrat giving its consent, a motion being rejected.
+The package turns them into one flat row per decision.
+
+```python
+# All decisions on one legislative procedure (DIP ID of the 'vorgang')
+decisions = bt.get_decisions(300001, return_format="pandas")
+decisions[["date", "institution", "position", "decision", "decided_document_number", "voting_method"]]
+
+# All recorded votes ("namentliche Abstimmungen") in June 2024
+votes = bt.search_decisions(
+    date_start="2024-06-01",
+    date_end="2024-06-30",
+    institution="BT",
+    voting_method="Namentliche Abstimmung",
+    limit=500,                 # number of procedure steps to scan
+    return_format="pandas",
+)
+```
+
+Each row contains the procedure (`procedure_id`, `procedure_title`, `procedure_type`), the step
+(`position`, e.g. "2. Beratung", `institution`, `date`), the decision (`decision`, `decided_document_number`,
+`voting_method`, `recorded_vote`, `majority`, `result_remark`, `legal_basis`) and where it is recorded
+(`document_number`, `page`, `pdf_url`). For decisions taken in a plenary session, `protocol_id` links
+to the protocol, so you can fetch the debate: `bt.get_speeches(row["protocol_id"])`.
+
+⚠️ **Read decisions carefully.** `decision` refers to the document in `decided_document_number`.
+"Annahme der Beschlussempfehlung" (adoption of the committee recommendation) can mean that the
+original motion was *rejected*, if the committee recommended rejection. Check that document before
+reporting an outcome. The API does not contain how individual members voted.
+
+Available voting methods: `bundestag_api.VOTING_METHODS`.
+
+### 6. Member Analysis
 
 ```python
 # Search for members of the Bundestag
@@ -366,6 +401,11 @@ monthly_counts = df.groupby(df['datum'].dt.to_period('M')).size()
 - `search_speeches(max_protocols=10, **filters)` - Speeches of protocols matching the filters
 - `parse_protocol(btid)` - Download and parse a protocol into speeches, segments and comments
 - `bundestag_api.parse_protocol_xml(path_or_xml)` - Parse a local XML protocol file
+
+### Decision Functions
+- `get_decisions(procedure_id, **options)` - Decisions of specific procedures
+- `search_decisions(limit=100, voting_method=None, **filters)` - Decisions in procedure steps matching the filters
+- `bundestag_api.flatten_decisions(positions)` - Turn procedure positions you already have into decision rows
 
 ### Get Functions (by ID)
 - `get_document(btid, **options)` - Get specific documents

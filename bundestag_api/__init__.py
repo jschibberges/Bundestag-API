@@ -7,3 +7,4 @@ from ._version import __version__
 from .bta_wrapper import btaConnection
 from .models import Person, Role, Drucksache, Aktivitaet, Vorgang, Vorgangsposition, Plenarprotokoll
 from .speeches import ParsedProtocol, parse_protocol_xml, split_comment
+from .decisions import VOTING_METHODS, flatten_decisions

@@ -237,7 +237,9 @@ class Vorgangsposition:
         self.procedureID = _to_int(dictionary.get("vorgang_id"))
         self.processposition = dictionary.get("vorgangsposition")
         self.processtype = dictionary.get("vorgangstyp")
-        
+        # Decisions ("Beschlussfassung") taken in this step, as list of dicts
+        self.decisions = dictionary.get("beschlussfassung") or []
+
         self.institution = None
         if "zuordnung" in dictionary:
             if dictionary["zuordnung"] == "BT":

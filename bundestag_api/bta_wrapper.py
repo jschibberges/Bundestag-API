@@ -13,6 +13,7 @@ from ._version import __version__
 from .models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, Plenarprotokoll
 from .utils import to_iso8601, to_date_string
 from .speeches import ParsedProtocol, parse_protocol_xml
+from .decisions import VOTING_METHODS, flatten_decisions
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -1002,7 +1003,8 @@ class btaConnection:
         if return_format not in ("json", "pandas"):
             raise ValueError("return_format must be 'json' or 'pandas' for speeches.")
 
-    def _format_speech_rows(self, rows: List[dict], return_format: str):
+    def _format_rows(self, rows: List[dict], return_format: str):
+        """Return flat rows as list of dicts or pandas DataFrame."""
         if return_format == "pandas":
             try:
                 import pandas as pd
@@ -1052,7 +1054,7 @@ class btaConnection:
                 time.sleep(self.delay * random.uniform(0.8, 1.2))
             parsed.append(self.parse_protocol(protocol_id))
         rows = self._collect_speech_rows(parsed, level, speaker, faction)
-        return self._format_speech_rows(rows, return_format)
+        return self._format_rows(rows, return_format)
 
     def search_speeches(self,
                         level: SpeechLevel = "speech",
@@ -1102,7 +1104,96 @@ class btaConnection:
                 time.sleep(self.delay * random.uniform(0.8, 1.2))
             parsed.append(self.parse_protocol(record))
         rows = self._collect_speech_rows(parsed, level, speaker, faction)
-        return self._format_speech_rows(rows, return_format)
+        return self._format_rows(rows, return_format)
+
+    # decisions (Beschlussfassung)
+    @staticmethod
+    def _validate_decision_args(return_format: str, voting_method: Optional[str]) -> None:
+        if return_format not in ("json", "pandas"):
+            raise ValueError("return_format must be 'json' or 'pandas' for decisions.")
+        if voting_method is not None and voting_method not in VOTING_METHODS:
+            raise ValueError("voting_method must be one of: " + ", ".join(VOTING_METHODS))
+
+    @staticmethod
+    def _filter_decisions(rows: List[dict], voting_method: Optional[str]) -> List[dict]:
+        if voting_method is None:
+            return rows
+        return [r for r in rows if r["voting_method"] == voting_method]
+
+    def get_decisions(self,
+                      procedure_id: Union[int, List[int]],
+                      return_format: Literal["json", "pandas"] = "json",
+                      voting_method: Optional[str] = None) -> Union[List[dict], pd.DataFrame]:
+        """
+        Retrieves all decisions ('Beschlussfassung') of one or more procedures.
+
+        Collects the procedure positions of each procedure ('vorgang') and returns
+        one row per decision, e.g. the adoption of a bill by the Bundestag or the
+        consent of the Bundesrat.
+
+        Note: `decision` refers to the document in `decided_document_number`.
+        "Annahme der Beschlussempfehlung" can mean that a motion was rejected if
+        the committee recommended rejection.
+
+        Parameters
+        ----------
+        procedure_id: int or list of int
+            The DIP ID or IDs of the procedure(s) ('vorgang').
+        return_format: str, optional
+            "json" (list of dicts, default) or "pandas" (DataFrame).
+        voting_method: str, optional
+            Only decisions with this voting method, e.g. "Namentliche Abstimmung"
+            (recorded vote). See `bundestag_api.decisions.VOTING_METHODS`.
+
+        Returns
+        -------
+        Union[List[dict], pd.DataFrame]
+        """
+        self._validate_decision_args(return_format, voting_method)
+        ids = self._validate_int_list_param(procedure_id, "procedure_id") or []
+        rows: List[dict] = []
+        for i, pid in enumerate(ids):
+            if i > 0 and self.delay > 0:
+                time.sleep(self.delay * random.uniform(0.8, 1.2))
+            positions = self.search_procedureposition(processID=pid, limit=1000)
+            rows.extend(flatten_decisions(positions))
+        rows = self._filter_decisions(rows, voting_method)
+        return self._format_rows(rows, return_format)
+
+    def search_decisions(self,
+                         limit: int = 100,
+                         return_format: Literal["json", "pandas"] = "json",
+                         voting_method: Optional[str] = None,
+                         **filters) -> Union[List[dict], pd.DataFrame]:
+        """
+        Searches procedure positions and returns the decisions they contain.
+
+        Positions are selected with the same filters as `search_procedureposition`
+        (e.g. `date_start`, `date_end`, `legislative_period`, `process_type`,
+        `institution`, `title`). Positions without a decision are skipped.
+
+        Parameters
+        ----------
+        limit: int, optional
+            Maximum number of procedure positions to scan (not decisions).
+            Defaults to 100.
+        return_format: str, optional
+            "json" (list of dicts, default) or "pandas" (DataFrame).
+        voting_method: str, optional
+            Only decisions with this voting method, e.g. "Namentliche Abstimmung".
+        **filters:
+            Filters passed to `search_procedureposition`.
+
+        Returns
+        -------
+        Union[List[dict], pd.DataFrame]
+        """
+        self._validate_decision_args(return_format, voting_method)
+        if "return_format" in filters or "fulltext" in filters:
+            raise ValueError("return_format and fulltext cannot be passed as filters.")
+        positions = self.search_procedureposition(limit=limit, **filters)
+        rows = self._filter_decisions(flatten_decisions(positions), voting_method)
+        return self._format_rows(rows, return_format)
 
     # utility
     def list_methods(self):

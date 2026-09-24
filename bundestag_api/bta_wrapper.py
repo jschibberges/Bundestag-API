@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union, Li
 from ._version import __version__
 from .models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, Plenarprotokoll
 from .utils import to_iso8601, to_date_string
+from .speeches import ParsedProtocol, parse_protocol_xml
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -20,6 +21,7 @@ logger = logging.getLogger("bundestag_api")
 logger.addHandler(logging.NullHandler())
 
 ReturnFormat = Literal["json", "object", "pandas"]
+SpeechLevel = Literal["speech", "segment", "comment"]
 Institution = Literal["BT", "BR", "BV", "EK"]
 Resource = Literal["aktivitaet", "drucksache", "drucksache-text", "person", 
                    "plenarprotokoll", "plenarprotokoll-text", "vorgang", 
@@ -919,6 +921,189 @@ class btaConnection:
         """
         return self._get("aktivitaet", btid, **filters)
     
+    # speeches (structured XML plenary protocols)
+    def _download_protocol_xml(self, xml_url: str) -> bytes:
+        """Download a structured XML plenary protocol from the Bundestag document server."""
+        if not isinstance(xml_url, str) or not xml_url.startswith("https://"):
+            raise ValueError(f"Invalid XML URL: {xml_url!r}")
+        # No Authorization header: the document server does not need the API key.
+        r = self.session.get(xml_url, timeout=60, headers={"Accept": "application/xml"})
+        logger.debug(xml_url)
+        if r.status_code != requests.codes.ok:
+            msg = f"Could not download {xml_url}. Code {r.status_code}: {r.reason}"
+            logger.error(msg)
+            raise requests.HTTPError(msg)
+        return r.content
+
+    def _protocol_record(self, protocol: Union[int, dict]) -> dict:
+        """Return the DIP metadata of a plenary protocol given its ID or a search result."""
+        if isinstance(protocol, dict):
+            return protocol
+        records = self.get_plenaryprotocol(protocol)
+        if not records:
+            raise ValueError(f"Plenary protocol with ID {protocol} not found.")
+        return records[0]
+
+    def parse_protocol(self, protocol: Union[int, dict]) -> ParsedProtocol:
+        """
+        Downloads and parses the structured XML version of a plenary protocol.
+
+        Structured XML is available for Bundestag protocols from the 18th
+        legislative period onwards (not for Bundesrat protocols).
+
+        Parameters
+        ----------
+        protocol: int or dict
+            The DIP ID of a plenary protocol ('plenarprotokoll'), or a protocol
+            record as returned by `search_plenaryprotocol`.
+
+        Returns
+        -------
+        ParsedProtocol
+            Object with the attributes `metadata`, `speeches`, `segments` and
+            `comments` (lists of dicts) and a `to_dataframes()` method.
+        """
+        record = self._protocol_record(protocol)
+        xml_url = (record.get("fundstelle") or {}).get("xml_url")
+        if not xml_url:
+            raise ValueError(
+                f"No structured XML available for plenary protocol "
+                f"{record.get('dokumentnummer', record.get('id'))} ({record.get('herausgeber')}). "
+                "XML protocols exist for the Bundestag from the 18th legislative period onwards."
+            )
+        content = self._download_protocol_xml(xml_url)
+        return parse_protocol_xml(content, extra_metadata={
+            "protocol_id": int(record["id"]),
+            "document_number": record.get("dokumentnummer"),
+        })
+
+    @staticmethod
+    def _collect_speech_rows(parsed: List[ParsedProtocol], level: str,
+                             speaker: Optional[str], faction: Optional[str]) -> List[dict]:
+        """Combine rows of the requested level and apply speaker/faction filters."""
+        rows: List[dict] = []
+        for protocol in parsed:
+            speech_ids = None
+            if speaker is not None or faction is not None:
+                speech_ids = {
+                    s["speech_id"] for s in protocol.speeches
+                    if (speaker is None or speaker.lower() in (s["speaker_name"] or "").lower())
+                    and (faction is None or faction.lower() in (s["faction"] or "").lower())
+                }
+            table = {"speech": protocol.speeches, "segment": protocol.segments,
+                     "comment": protocol.comments}[level]
+            rows.extend(r for r in table if speech_ids is None or r["speech_id"] in speech_ids)
+        return rows
+
+    @staticmethod
+    def _validate_speech_args(level: str, return_format: str) -> None:
+        if level not in ("speech", "segment", "comment"):
+            raise ValueError("level must be 'speech', 'segment' or 'comment'.")
+        if return_format not in ("json", "pandas"):
+            raise ValueError("return_format must be 'json' or 'pandas' for speeches.")
+
+    def _format_speech_rows(self, rows: List[dict], return_format: str):
+        if return_format == "pandas":
+            try:
+                import pandas as pd
+            except ImportError as e:
+                raise ImportError(
+                    "return_format='pandas' requires pandas. Install it with "
+                    "'pip install bundestag_api[pandas]' or 'conda install pandas'."
+                ) from e
+            return pd.DataFrame(rows)
+        return rows
+
+    def get_speeches(self,
+                     btid: Union[int, List[int]],
+                     level: SpeechLevel = "speech",
+                     return_format: Literal["json", "pandas"] = "json",
+                     speaker: Optional[str] = None,
+                     faction: Optional[str] = None) -> Union[List[dict], pd.DataFrame]:
+        """
+        Retrieves the speeches of one or more plenary protocols by their ID(s).
+
+        Parameters
+        ----------
+        btid: int or list of int
+            The DIP ID or IDs of the plenary protocol(s).
+        level: str, optional
+            "speech" (default): one row per speech, text of the main speaker only.
+            "segment": one row per passage of one speaker, including the presiding
+            officer and interposed questions.
+            "comment": one row per interjection (applause, heckling, laughter, ...).
+        return_format: str, optional
+            "json" (list of dicts, default) or "pandas" (DataFrame).
+        speaker: str, optional
+            Only speeches whose speaker name contains this string (case-insensitive).
+        faction: str, optional
+            Only speeches of speakers whose faction contains this string
+            (case-insensitive), e.g. "SPD" or "GRÜNE".
+
+        Returns
+        -------
+        Union[List[dict], pd.DataFrame]
+        """
+        self._validate_speech_args(level, return_format)
+        ids = self._validate_int_list_param(btid, "btid") or []
+        parsed = []
+        for i, protocol_id in enumerate(ids):
+            if i > 0 and self.delay > 0:
+                time.sleep(self.delay * random.uniform(0.8, 1.2))
+            parsed.append(self.parse_protocol(protocol_id))
+        rows = self._collect_speech_rows(parsed, level, speaker, faction)
+        return self._format_speech_rows(rows, return_format)
+
+    def search_speeches(self,
+                        level: SpeechLevel = "speech",
+                        return_format: Literal["json", "pandas"] = "json",
+                        speaker: Optional[str] = None,
+                        faction: Optional[str] = None,
+                        max_protocols: int = 10,
+                        **filters) -> Union[List[dict], pd.DataFrame]:
+        """
+        Searches plenary protocols and returns the speeches they contain.
+
+        Protocols are selected with the same filters as `search_plenaryprotocol`
+        (e.g. `date_start`, `date_end`, `legislative_period`, `document_number`).
+        Only Bundestag protocols have structured XML, so `institution` defaults
+        to "BT". Protocols without XML are skipped.
+
+        Every protocol is a separate download of several megabytes, so the number
+        of protocols is capped by `max_protocols` (default 10).
+
+        Parameters
+        ----------
+        level, return_format, speaker, faction:
+            See `get_speeches`.
+        max_protocols: int, optional
+            Maximum number of protocols to download. Defaults to 10.
+        **filters:
+            Filters passed to `search_plenaryprotocol`.
+
+        Returns
+        -------
+        Union[List[dict], pd.DataFrame]
+        """
+        self._validate_speech_args(level, return_format)
+        if "limit" in filters:
+            raise ValueError("Use max_protocols instead of limit to cap the number of protocols.")
+        if "return_format" in filters or "fulltext" in filters:
+            raise ValueError("return_format and fulltext cannot be passed as protocol filters.")
+        filters.setdefault("institution", "BT")
+        records = self.search_plenaryprotocol(limit=max_protocols, **filters)
+        parsed = []
+        for record in records:
+            if not (record.get("fundstelle") or {}).get("xml_url"):
+                logger.info("Skipping plenary protocol %s: no structured XML available.",
+                            record.get("dokumentnummer"))
+                continue
+            if parsed and self.delay > 0:
+                time.sleep(self.delay * random.uniform(0.8, 1.2))
+            parsed.append(self.parse_protocol(record))
+        rows = self._collect_speech_rows(parsed, level, speaker, faction)
+        return self._format_speech_rows(rows, return_format)
+
     # utility
     def list_methods(self):
         """

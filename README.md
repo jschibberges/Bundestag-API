@@ -88,10 +88,11 @@ procedures = bt.search_procedure(
 procedure_details = bt.get_procedure(btid=12345)
 ```
 
-### 3. Analyzing Parliamentary Speeches
+### 3. Full Text of Plenary Protocols
 
 ```python
-# Get plenary protocols with full text
+# Get plenary protocols with their full text as one string (all periods, BT and BR).
+# For individual speeches, see "Speech Analysis" below.
 protocols = bt.search_plenaryprotocol(
     date_start="2024-01-01",
     fulltext=True,
@@ -99,7 +100,68 @@ protocols = bt.search_plenaryprotocol(
 )
 ```
 
-### 4. Member Analysis
+### 4. Speech Analysis (Who Said What)
+
+Since the 18th legislative period (2013), the Bundestag publishes its plenary
+protocols as structured XML. The package downloads and parses these files into
+flat tables, so you can analyse speeches without writing any XML code.
+
+```python
+# All speeches of one plenary session (DIP ID of the 'plenarprotokoll')
+speeches = bt.get_speeches(5678, return_format="pandas")
+speeches[["speaker_name", "faction", "agenda_item", "word_count"]].head()
+
+# Speeches from several sessions, filtered by faction (case-insensitive substring)
+greens = bt.search_speeches(
+    date_start="2024-06-01",
+    date_end="2024-06-30",
+    faction="GRÜNE",
+    max_protocols=5,          # each protocol is a separate download
+    return_format="pandas",
+)
+
+# Words spoken per faction
+greens.groupby("faction")["word_count"].sum()
+```
+
+Three levels of detail are available via `level=`:
+
+| `level` | One row per | Typical use |
+|---------|-------------|-------------|
+| `"speech"` (default) | speech; `text` contains only the main speaker | text mining, speaking time, topics |
+| `"segment"` | passage of one speaker, incl. presiding officer (`speaker_role="chair"`) and interposed questions (`"other"`) | debate dynamics, interventions |
+| `"comment"` | part of an interjection recorded in the protocol | applause and heckling analysis |
+
+```python
+# Who heckles whom?
+comments = bt.get_speeches(5678, level="comment", return_format="pandas")
+heckles = comments[comments["kind"] == "Zuruf"]
+heckles.groupby(["actor_faction", "speaker_faction"]).size()
+
+# Applause, also when combined with other reactions ("Heiterkeit und Beifall ...")
+applause = comments[comments["text"].str.contains("Beifall")]
+```
+
+Already downloaded an XML file? Parse it directly:
+
+```python
+from bundestag_api import parse_protocol_xml
+
+protocol = parse_protocol_xml("20177.xml")
+frames = protocol.to_dataframes()   # {"speeches": ..., "segments": ..., "comments": ...}
+```
+
+Good to know:
+- Structured XML exists only for Bundestag protocols from 2013 onwards (18th legislative
+  period), not for the Bundesrat. `search_speeches` therefore filters on `institution="BT"`
+  by default and skips protocols without XML.
+- `speaker_id` is the ID of the Bundestag's member master data (MdB-Stammdaten), which
+  differs from the DIP `person_id`.
+- Speeches submitted in writing ("zu Protokoll gegebene Reden") are marked with `in_annex=True`.
+- Comments are classified by their leading keyword (`kind`: Beifall, Zuruf, Heiterkeit,
+  Lachen, Widerspruch, ...). The original wording is always kept in `text` and `comment_text`.
+
+### 5. Member Analysis
 
 ```python
 # Search for members of the Bundestag
@@ -298,6 +360,12 @@ monthly_counts = df.groupby(df['datum'].dt.to_period('M')).size()
 - `search_person(**filters)` - Find parliamentarians
 - `search_plenaryprotocol(**filters)` - Find session protocols
 - `search_procedureposition(**filters)` - Find procedure steps
+
+### Speech Functions
+- `get_speeches(btid, level="speech", **options)` - Speeches of specific plenary protocols
+- `search_speeches(max_protocols=10, **filters)` - Speeches of protocols matching the filters
+- `parse_protocol(btid)` - Download and parse a protocol into speeches, segments and comments
+- `bundestag_api.parse_protocol_xml(path_or_xml)` - Parse a local XML protocol file
 
 ### Get Functions (by ID)
 - `get_document(btid, **options)` - Get specific documents

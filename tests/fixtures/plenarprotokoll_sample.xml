@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dbtplenarprotokoll SYSTEM "dbtplenarprotokoll.dtd">
+<!-- Synthetic sample in the structure of the Bundestag XML protocols (DTD dbtplenarprotokoll).
+     All names and statements are fictional. -->
+<dbtplenarprotokoll wahlperiode="20" sitzung-nr="999" sitzung-datum="06.06.2024" sitzung-start-uhrzeit="9:00" sitzung-ende-uhrzeit="18:30" sitzung-naechste-datum="07.06.2024" herausgeber="Deutscher Bundestag" herstellung="Test" issn="0722-7980" berichtart="Steno" version="1.0">
+  <vorspann>
+    <kopfdaten>
+      <plenarprotokoll-nummer>Plenarprotokoll <wahlperiode>20</wahlperiode>/<sitzungsnr>999</sitzungsnr></plenarprotokoll-nummer>
+      <herausgeber>Deutscher Bundestag</herausgeber>
+      <berichtart>Stenografischer Bericht</berichtart>
+      <sitzungstitel><sitzungsnr>999</sitzungsnr>. Sitzung</sitzungstitel>
+      <veranstaltungsdaten><ort>Berlin</ort>, <datum date="06.06.2024">Donnerstag, den 6. Juni 2024</datum></veranstaltungsdaten>
+    </kopfdaten>
+    <inhaltsverzeichnis><p klasse="Z">Inhalt ...</p></inhaltsverzeichnis>
+  </vorspann>
+  <sitzungsverlauf>
+    <sitzungsbeginn sitzung-start-uhrzeit="9:00">
+      <a id="S1" name="S1" typ="druckseitennummer"/>
+      <name>Präsidentin Erika Beispiel:</name>
+      <p klasse="J_1">Die Sitzung ist eröffnet.</p>
+    </sitzungsbeginn>
+    <tagesordnungspunkt top-id="Tagesordnungspunkt 1">
+      <p klasse="T_NaS">Beratung des Antrags ...</p>
+      <rede id="ID209990100">
+        <p klasse="redner"><redner id="11001234"><name><titel>Dr.</titel><vorname>Anna</vorname><nachname>Muster</nachname><fraktion>SPD</fraktion></name></redner>Dr. Anna Muster (SPD):</p>
+        <p klasse="J_1">Frau Präsidentin! Liebe Kolleginnen und Kollegen!</p>
+        <p klasse="J">Wir stärken heute den Klimaschutz.</p>
+        <kommentar>(Beifall bei der SPD und dem BÜNDNIS 90/DIE GRÜNEN – Zuruf des Abg. Bernd Beispiel [AfD]: Das glauben Sie doch selbst nicht!)</kommentar>
+        <a id="S2" name="S2" typ="druckseitennummer"/>
+        <name>Präsidentin Erika Beispiel:</name>
+        <p klasse="J_1">Frau Kollegin, gestatten Sie eine Zwischenfrage des Kollegen Beispiel?</p>
+        <p klasse="redner"><redner id="11001234"><name><titel>Dr.</titel><vorname>Anna</vorname><nachname>Muster</nachname><fraktion>SPD</fraktion></name></redner>Dr. Anna Muster (SPD):</p>
+        <p klasse="J_1">Ja, bitte.</p>
+        <p klasse="redner"><redner id="11005678"><name><vorname>Bernd</vorname><nachname>Beispiel</nachname><ortszusatz>(Musterstadt)</ortszusatz><fraktion>AfD</fraktion></name></redner>Bernd Beispiel (Musterstadt) (AfD):</p>
+        <p klasse="J_1">Was kostet das?</p>
+        <p klasse="redner"><redner id="11001234"><name><titel>Dr.</titel><vorname>Anna</vorname><nachname>Muster</nachname><fraktion>SPD</fraktion></name></redner>Dr. Anna Muster (SPD):</p>
+        <p klasse="J_1">Weniger als Nichtstun.</p>
+        <kommentar>(Heiterkeit und Beifall bei der SPD)</kommentar>
+      </rede>
+      <rede id="ID209990200">
+        <p klasse="redner"><redner id="11009999"><name><vorname>Carl</vorname><namenszusatz>von</namenszusatz><nachname>Probe</nachname><rolle><rolle_lang>Bundesminister für Testwesen</rolle_lang><rolle_kurz>Bundesminister BMT</rolle_kurz></rolle></name></redner>Carl von Probe, Bundesminister für Testwesen:</p>
+        <p klasse="J_1">Sehr geehrte Frau Präsidentin!</p>
+        <zitat>„Ein Zitat im Text.“</zitat>
+        <p klasse="J">Vielen Dank.</p>
+      </rede>
+    </tagesordnungspunkt>
+    <sitzungsende sitzung-ende-uhrzeit="18:30"/>
+  </sitzungsverlauf>
+  <anlagen>
+    <anlagen-text anlagen-typ="Zu Protokoll gegebene Reden">
+      <rede id="ID209990300">
+        <p klasse="redner"><redner id="11004321"><name><vorname>Dora</vorname><nachname>Exempel</nachname><bdland>Niedersachsen</bdland></name></redner>Dora Exempel, Niedersachsen:</p>
+        <p klasse="J_1">Zu Protokoll gegebene Rede.</p>
+      </rede>
+    </anlagen-text>
+  </anlagen>
+  <rednerliste sitzung-datum="06.06.2024">
+    <redner id="11001234"><name><titel>Dr.</titel><vorname>Anna</vorname><nachname>Muster</nachname><fraktion>SPD</fraktion></name></redner>
+  </rednerliste>
+</dbtplenarprotokoll>

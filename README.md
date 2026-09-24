@@ -1,7 +1,7 @@
 # Bundestag API
 
 [![Upload Python Package](https://github.com/jschibberges/Bundestag-API/actions/workflows/python-publish.yml/badge.svg)](https://github.com/jschibberges/Bundestag-API/actions/workflows/python-publish.yml)
-[![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
 A beginner-friendly Python wrapper for accessing German Federal Parliament (Bundestag) data. This package simplifies querying parliamentary documents, procedures, plenary protocols, and member information through the official Bundestag API.
 
@@ -11,7 +11,7 @@ Perfect for data scientists, researchers, and political analysts who want to ana
 
 - **Analyze Parliamentary Documents**: Access bills, reports, and official documents
 - **Track Legislative Processes**: Follow how laws move through parliament
-- **Study Voting Patterns**: Examine plenary protocols and activities
+- **Follow Parliamentary Debates**: Examine plenary protocols, speeches and other activities
 - **Research Politicians**: Get information about current and former members of parliament
 - **Time Series Analysis**: Filter data by date ranges for trend analysis
 
@@ -20,8 +20,11 @@ Perfect for data scientists, researchers, and political analysts who want to ana
 ### Installation
 
 ```bash
-pip install bundestag_api
+pip install bundestag_api            # core package
+pip install "bundestag_api[pandas]"  # with pandas support for return_format="pandas"
 ```
+
+Python 3.8 or newer is required.
 
 ### Your First Query
 
@@ -47,7 +50,7 @@ The Bundestag API provides access to 6 main data types:
 |-----------|-------------|-----------|
 | **Documents** (`drucksache`) | Bills, reports, proposals | Policy analysis, text mining |
 | **Procedures** (`vorgang`) | Legislative processes | Tracking law development |
-| **Activities** (`aktivitaet`) | Parliamentary actions | Voting behavior analysis |
+| **Activities** (`aktivitaet`) | Speeches, questions, other actions of individual persons | Who speaks or asks about what |
 | **Persons** (`person`) | MPs and officials | Political network analysis |
 | **Plenary Protocols** (`plenarprotokoll`) | Session transcripts | Speech analysis, debate tracking |
 | **Procedure Positions** (`vorgangsposition`) | Steps in processes | Process flow analysis |
@@ -74,9 +77,10 @@ doc_with_text = bt.search_document(
 ### 2. Tracking Legislative Processes
 
 ```python
-# Find procedures by topic
+# Find procedures by topic. Descriptors are German keywords from the
+# Bundestag thesaurus; multiple descriptors are combined with AND.
 procedures = bt.search_procedure(
-    descriptor=["Climate", "Energy"],  # AND search
+    descriptor=["Klimaschutz", "Windenergieanlage"],
     limit=50
 )
 
@@ -128,14 +132,19 @@ All search functions support common filters:
 
 ```python
 documents = bt.search_document(
-    date_start="2024-01-01",      # Start date (YYYY-MM-DD)
-    date_end="2024-12-31",        # End date (YYYY-MM-DD)  
+    date_start="2024-01-01",      # Start date (YYYY-MM-DD string or datetime.date)
+    date_end="2024-12-31",        # End date (YYYY-MM-DD string or datetime.date)
     institution="BT",             # BT=Bundestag, BR=Bundesrat
     drucksache_type="Antrag",     # Specific 'Drucksache' types
-    title=["Climate", "Energy"],  # Keywords in title (OR search)
+    title=["Klima", "Energie"],   # Keywords in title (OR search, German terms)
     limit=100                     # Maximum results
 )
 ```
+
+Not every filter is available for every data type. If you pass a filter that the
+API does not support for a resource (e.g. `descriptor` for documents), the package
+raises a `ValueError` naming the resources where the filter can be used, instead
+of silently returning unfiltered data.
 
 ### Handling Large Datasets
 
@@ -185,17 +194,24 @@ If you encounter `ConnectionError: Bot protection detected (Enodia challenge)`, 
 
 ## Data Structure Examples
 
+Abbreviated examples; see the [official API documentation](https://dip.bundestag.de/über-dip/hilfe/api) for all fields.
+
 ### Document Structure
 ```python
 {
-    "id": 264030,
-    "titel": "Climate Protection Act Amendment",
-    "drucksachetyp": "Gesetzentwurf",
-    "datum": "2024-01-15",
-    "urheber": ["Federal Government"],
+    "id": "68852",
+    "typ": "Dokument",
+    "dokumentart": "Drucksache",
+    "drucksachetyp": "Antrag",
+    "dokumentnummer": "19/1",
+    "wahlperiode": 19,
+    "herausgeber": "BT",
+    "datum": "2017-10-24",
+    "titel": "Weitergeltung von Geschäftsordnungsrecht",
+    "urheber": [{"bezeichnung": "CDU/CSU", "titel": "Fraktion der CDU/CSU"}],
     "fundstelle": {
-        "pdf_url": "https://...",
-        "dokumentnummer": "20/1234"
+        "dokumentnummer": "19/1",
+        "pdf_url": "https://dserver.bundestag.de/btd/19/000/1900001.pdf"
     }
 }
 ```
@@ -203,20 +219,27 @@ If you encounter `ConnectionError: Bot protection detected (Enodia challenge)`, 
 ### Person Structure
 ```python
 {
-    "id": 12345,
-    "vorname": "Angela",
-    "nachname": "Merkel", 
-    "titel": "Dr.",
+    "id": "1728",
+    "vorname": "Ursula",
+    "nachname": "Leyen",
+    "namenszusatz": "von der",
+    "titel": "Dr.  Ursula von der Leyen, Bundesmin., Bundesministerium der Verteidigung",
+    "wahlperiode": [17, 18, 19],
     "person_roles": [{
-        "funktion": "MdB",
-        "fraktion": "CDU/CSU"
+        "funktion": "LMin Soz u. Frauen",
+        "nachname": "Leyen",
+        "vorname": "Ursula"
     }]
 }
 ```
 
+Note that IDs are delivered as strings in the raw JSON. With `return_format="object"`,
+all IDs are converted to integers.
+
 ## API Authentication
 
-The package includes a public API key that's valid until May 31, 2026. For production use or higher rate limits, request your personal API key from [parlamentsdokumentation@bundestag.de](mailto:parlamentsdokumentation@bundestag.de).
+The package includes a public API key that's valid until May 31, 2027. The key is sent in the
+HTTP `Authorization` header, so it does not appear in URLs, logs or error messages. For production use or higher rate limits, request your personal API key from [parlamentsdokumentation@bundestag.de](mailto:parlamentsdokumentation@bundestag.de).
 
 ```python
 # Using personal API key
@@ -288,7 +311,7 @@ monthly_counts = df.groupby(df['datum'].dt.to_period('M')).size()
 
 **Memory issues with large datasets?**
 - Use smaller `limit` values and process in chunks
-- Use `return_format="pandas"` for better memory efficiency
+- Filter by `legislative_period` or date range to reduce the result size
 
 **Getting empty results?**
 - Check date formats (YYYY-MM-DD)

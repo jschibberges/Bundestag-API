@@ -1,10 +1,21 @@
 # -*- coding: utf-8 -*-
 
+
+def _to_int(value):
+    """Convert numeric IDs (delivered as strings by the API) to int; keep None."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
 class Person:
     """This class represents a German parliamentarian"""
 
     def __init__(self, dictionary):
-        self.btid = dictionary.get("id")
+        self.btid = _to_int(dictionary.get("id"))
         self._from_dict(dictionary)
 
     def _from_dict(self, dictionary):
@@ -89,7 +100,7 @@ class Drucksache:
     """This class represents a document of the German federal parliaments"""
 
     def __init__(self, dictionary):
-        self.btid = int(dictionary["id"])
+        self.btid = _to_int(dictionary["id"])
         self.publisher = dictionary.get("herausgeber")
         if self.publisher == "BT": self.publisher = "Bundestag"
         if self.publisher == "BR": self.publisher = "Bundesrat"
@@ -118,8 +129,9 @@ class Drucksache:
             auan = []
             auanid = []
             for a in dictionary["autoren_anzeige"]:
-                auan.append(a["titel"])
-                auanid.append(a["id"])
+                # The API delivers "autor_titel" (name) and "title" (name, role, faction)
+                auan.append(a.get("autor_titel") or a.get("title") or a.get("titel"))
+                auanid.append(_to_int(a.get("id")))
             self.author = auan
             self.authorid = auanid
             self.authordisplay = dictionary["autoren_anzeige"]
@@ -136,19 +148,22 @@ class Aktivitaet:
     """This class represents an activity in the German federal parliaments"""
 
     def __init__(self, dictionary):
-        self.btid = dictionary["id"]
-        self.activitytype = dictionary["aktivitaetsart"]
-        self.date = dictionary["datum"]
-        self.title = dictionary["titel"]
-        self.type = dictionary["typ"]
-        self.doctype = dictionary["dokumentart"]
-        self.parlsession = dictionary["wahlperiode"]
-        self.numprocedure = dictionary["vorgangsbezug_anzahl"]
-        self.procedure_reference = dictionary["vorgangsbezug"][0]["id"]
-        self.document_reference = dictionary["fundstelle"]["id"]
+        self.btid = _to_int(dictionary["id"])
+        self.activitytype = dictionary.get("aktivitaetsart")
+        self.date = dictionary.get("datum")
+        self.title = dictionary.get("titel")
+        self.type = dictionary.get("typ")
+        self.doctype = dictionary.get("dokumentart")
+        self.parlsession = dictionary.get("wahlperiode")
+        self.numprocedure = dictionary.get("vorgangsbezug_anzahl")
+        # "vorgangsbezug" is optional and may be empty
+        vorgangsbezug = dictionary.get("vorgangsbezug") or []
+        self.procedure_reference = _to_int(vorgangsbezug[0].get("id")) if vorgangsbezug else None
+        fundstelle = dictionary.get("fundstelle") or {}
+        self.document_reference = _to_int(fundstelle.get("id"))
 
     def __str__(self):
-        return f'{self.instance}: ({self.btid}) {self.activitytype} - {self.title} - {self.date}'
+        return f'{self.type}: ({self.btid}) {self.activitytype} - {self.title} - {self.date}'
 
     def __repr__(self):
         return f'Aktivitaet(btid={self.btid}, activitytype="{self.activitytype}")'
@@ -157,7 +172,7 @@ class Vorgang:
     """This class represents a legislative process in of the German federal parliaments"""
 
     def __init__(self, dictionary):
-        self.btid = dictionary["id"]
+        self.btid = _to_int(dictionary["id"])
         self.process_positions = []
         self.date = dictionary.get("datum")
         self.title = dictionary.get("titel")
@@ -184,8 +199,12 @@ class Vorgang:
         self.urgency = None
         if dictionary.get("zustimmungsbeduerftigkeit"):
             self.approvalnecessary = dictionary["zustimmungsbeduerftigkeit"]
-            self.approvalnecessaryBool = dictionary["zustimmungsbeduerftigkeit"][len(
-                dictionary["zustimmungsbeduerftigkeit"])-1].split(",")[0]
+            # The last entry is the most recent assessment, e.g. "Nein, laut Verkündung (BGBl I)"
+            latest = dictionary["zustimmungsbeduerftigkeit"][-1].split(",")[0].strip().lower()
+            if latest == "ja":
+                self.approvalnecessaryBool = True
+            elif latest == "nein":
+                self.approvalnecessaryBool = False
             if any("bes.eilbed." in s for s in dictionary["zustimmungsbeduerftigkeit"]):
                 self.urgency = True
 
@@ -206,7 +225,7 @@ class Vorgangsposition:
     """This class represents a step in a legislative process in the German federal parliaments"""
 
     def __init__(self, dictionary):
-        self.btid = dictionary["id"]
+        self.btid = _to_int(dictionary["id"])
         self.date = dictionary.get("datum")
         self.docname = dictionary.get("dokumentart")
         self.continuation = dictionary.get("fortsetzung")
@@ -215,7 +234,7 @@ class Vorgangsposition:
         self.title = dictionary.get("titel")
         self.instance = dictionary.get("typ")
         self.originator = dictionary.get("urheber")
-        self.procedureID = dictionary.get("vorgang_id")
+        self.procedureID = _to_int(dictionary.get("vorgang_id"))
         self.processposition = dictionary.get("vorgangsposition")
         self.processtype = dictionary.get("vorgangstyp")
         
@@ -239,7 +258,7 @@ class Plenarprotokoll:
     """This class represents a plenary protocol of the German federal parliaments"""
 
     def __init__(self, dictionary):
-        self.btid = dictionary["id"]
+        self.btid = _to_int(dictionary["id"])
         self.date = dictionary.get("datum")
         self.docname = dictionary.get("dokumentart")
         self.title = dictionary.get("titel")

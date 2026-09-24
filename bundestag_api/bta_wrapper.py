@@ -1,15 +1,20 @@
 # -*- coding: utf-8 -*-
-from datetime import datetime
+from __future__ import annotations
+
+from datetime import date, datetime
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 import logging
 import time
 import random
-import pandas as pd
-from typing import Any, Dict, Iterable, List, Optional, Union, Literal, cast
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union, Literal, cast
+from ._version import __version__
 from .models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, Plenarprotokoll
-from .utils import to_iso8601
+from .utils import to_iso8601, to_date_string
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 logger = logging.getLogger("bundestag_api")
 logger.addHandler(logging.NullHandler())
@@ -19,6 +24,71 @@ Institution = Literal["BT", "BR", "BV", "EK"]
 Resource = Literal["aktivitaet", "drucksache", "drucksache-text", "person", 
                    "plenarprotokoll", "plenarprotokoll-text", "vorgang", 
                    "vorgangsposition"]
+
+# Maps the wrapper's parameter names to the DIP API filter names.
+FILTER_PARAMS = {
+    "fid": "f.id",
+    "date_start": "f.datum.start",
+    "date_end": "f.datum.end",
+    "updated_since": "f.aktualisiert.start",
+    "updated_until": "f.aktualisiert.end",
+    "drucksacheID": "f.drucksache",
+    "plenaryprotocolID": "f.plenarprotokoll",
+    "processID": "f.vorgang",
+    "institution": "f.zuordnung",
+    "descriptor": "f.deskriptor",
+    "sachgebiet": "f.sachgebiet",
+    "drucksache_type": "f.drucksachetyp",
+    "process_type": "f.vorgangstyp",
+    "process_type_notation": "f.vorgangstyp_notation",
+    "title": "f.titel",
+    "activityID": "f.aktivitaet",
+    "legislative_period": "f.wahlperiode",
+    "person_name": "f.person",
+    "personID": "f.person_id",
+    "document_number": "f.dokumentnummer",
+    "document_art": "f.dokumentart",
+    "question_number": "f.frage_nummer",
+    "gesta_id": "f.gesta",
+    "procedure_positionID": "f.vorgangsposition_id",
+    "consultation_status": "f.beratungsstand",
+    "publication_reference": "f.verkuendung_fundstelle",
+    "initiative": "f.initiative",
+    "lead_department": "f.ressort_fdf",
+    "originator": "f.urheber",
+}
+
+# Filters accepted by each endpoint, taken from the DIP OpenAPI specification (v1.5).
+_COMMON_FILTERS = {"f.id", "f.datum.start", "f.datum.end", "f.aktualisiert.start",
+                   "f.aktualisiert.end", "f.wahlperiode"}
+_DRUCKSACHE_FILTERS = _COMMON_FILTERS | {
+    "f.dokumentnummer", "f.drucksachetyp", "f.ressort_fdf", "f.titel", "f.urheber",
+    "f.vorgangstyp", "f.vorgangstyp_notation", "f.zuordnung"}
+_PLENARPROTOKOLL_FILTERS = _COMMON_FILTERS | {
+    "f.dokumentnummer", "f.vorgangstyp", "f.vorgangstyp_notation", "f.zuordnung"}
+SUPPORTED_FILTERS = {
+    "vorgang": _COMMON_FILTERS | {
+        "f.beratungsstand", "f.deskriptor", "f.dokumentart", "f.dokumentnummer",
+        "f.drucksache", "f.drucksachetyp", "f.frage_nummer", "f.gesta", "f.initiative",
+        "f.kom", "f.plenarprotokoll", "f.ratsdok", "f.ressort_fdf", "f.sachgebiet",
+        "f.titel", "f.urheber", "f.verkuendung_fundstelle", "f.vorgangstyp",
+        "f.vorgangstyp_notation"},
+    "vorgangsposition": _COMMON_FILTERS | {
+        "f.aktivitaet", "f.dokumentart", "f.dokumentnummer", "f.drucksache",
+        "f.drucksachetyp", "f.frage_nummer", "f.kom", "f.plenarprotokoll", "f.ratsdok",
+        "f.ressort_fdf", "f.titel", "f.urheber", "f.vorgang", "f.vorgangstyp",
+        "f.vorgangstyp_notation", "f.zuordnung"},
+    "drucksache": _DRUCKSACHE_FILTERS,
+    "drucksache-text": _DRUCKSACHE_FILTERS,
+    "plenarprotokoll": _PLENARPROTOKOLL_FILTERS,
+    "plenarprotokoll-text": _PLENARPROTOKOLL_FILTERS,
+    "aktivitaet": _COMMON_FILTERS | {
+        "f.deskriptor", "f.dokumentart", "f.dokumentnummer", "f.drucksache",
+        "f.drucksachetyp", "f.frage_nummer", "f.kom", "f.person", "f.person_id",
+        "f.plenarprotokoll", "f.ratsdok", "f.sachgebiet", "f.urheber",
+        "f.vorgangsposition_id", "f.vorgangstyp", "f.vorgangstyp_notation", "f.zuordnung"},
+    "person": _COMMON_FILTERS | {"f.person"},
+}
 
 class btaConnection:
     """This class handles the API authentication and provides search functionality
@@ -91,16 +161,19 @@ class btaConnection:
             self.session = self._build_session()
 
 
+    def _masked_apikey(self) -> str:
+        return f"{self.apikey[:4]}...{self.apikey[-2:]}"
+
     def __str__(self):
-        return "API key: "+str(self.apikey)
+        return "API key: " + self._masked_apikey()
 
     def __repr__(self):
-        return "API key: "+str(self.apikey)
+        return f"btaConnection(apikey='{self._masked_apikey()}')"
 
     def _apply_session_headers(self, s: requests.Session) -> None:
         """Apply the standard request headers to a session."""
         s.headers.update({
-            'User-Agent': 'bundestag_api/1.0',
+            'User-Agent': f'bundestag_api/{__version__}',
             'Accept': 'application/json',
             'Accept-Encoding': 'gzip, deflate',
             'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
@@ -164,7 +237,7 @@ class btaConnection:
             raise ValueError("No or wrong resource")
 
         # Validate return format
-        if return_format not in ["json", "xml", "object", "pandas"]:
+        if return_format not in ["json", "object", "pandas"]:
             raise ValueError("return_format: Not a correct format!")
 
         # Validate institution
@@ -239,48 +312,23 @@ class btaConnection:
     def _validate_resource_specific_params(self, resource: Resource, params: dict):
         """Validate that parameters are only used with compatible resources.
 
-        Raises ValueError if a parameter is used with an incompatible resource.
+        Uses the SUPPORTED_FILTERS table derived from the OpenAPI specification.
+        Raises ValueError if a parameter is used with an incompatible resource,
+        so that filters are never silently dropped or ignored by the API.
         """
-        validations = [
-            ('person_name', ["aktivitaet", "person"],
-             "person_name can only be used with resource 'aktivitaet' or 'person'"),
-            ('personID', ["aktivitaet"],
-             "personID can only be used with resource 'aktivitaet'"),
-            ('gesta_id', ["vorgang"],
-             "gesta_id can only be used with resource 'vorgang'"),
-            ('procedure_positionID', ["aktivitaet"],
-             "procedure_positionID can only be used with resource 'aktivitaet'"),
-            ('consultation_status', ["vorgang"],
-             "consultation_status can only be used with resource 'vorgang'"),
-            ('publication_reference', ["vorgang"],
-             "publication_reference can only be used with resource 'vorgang'"),
-            ('initiative', ["vorgang"],
-             "initiative can only be used with resource 'vorgang'"),
-        ]
-
-        for param_name, allowed_resources, error_msg in validations:
-            if params.get(param_name) is not None and resource not in allowed_resources:
-                raise ValueError(error_msg)
-
-        # Special case: document_number cannot be used with person
-        if params.get('document_number') is not None and resource == "person":
-            raise ValueError("document_number cannot be used with resource 'person'")
-
-        # Special case: document_art
-        if params.get('document_art') is not None and resource not in ["vorgang", "vorgangsposition", "aktivitaet"]:
-            raise ValueError("document_art can only be used with resource 'vorgang', 'vorgangsposition', or 'aktivitaet'")
-
-        # Special case: question_number
-        if params.get('question_number') is not None and resource not in ["vorgang", "vorgangsposition", "aktivitaet"]:
-            raise ValueError("question_number can only be used with resource 'vorgang', 'vorgangsposition', or 'aktivitaet'")
-
-        # Special case: lead_department
-        if params.get('lead_department') is not None and resource not in ["vorgang", "vorgangsposition", "drucksache", "drucksache-text"]:
-            raise ValueError("lead_department can only be used with 'vorgang', 'vorgangsposition', 'drucksache', or 'drucksache-text'")
-
-        # Special case: originator
-        if params.get('originator') is not None and resource not in ["vorgang", "vorgangsposition", "drucksache", "drucksache-text", "aktivitaet"]:
-            raise ValueError("originator can only be used with 'vorgang', 'vorgangsposition', 'drucksache', 'drucksache-text', or 'aktivitaet'")
+        supported = SUPPORTED_FILTERS[resource]
+        for param_name, value in params.items():
+            if value is None:
+                continue
+            api_filter = FILTER_PARAMS.get(param_name)
+            if api_filter is None or api_filter in supported:
+                continue
+            allowed = sorted(r for r, filters in SUPPORTED_FILTERS.items() if api_filter in filters)
+            raise ValueError(
+                f"{param_name} can only be used with resource "
+                + ", ".join(f"'{r}'" for r in allowed)
+                + f" (not with '{resource}')"
+            )
 
     def _validate_and_normalize_params(self, resource: Resource, **params) -> dict:
         """Validate all filter parameters and normalize them to correct types.
@@ -312,26 +360,14 @@ class btaConnection:
         validated['lead_department'] = self._validate_str_list_param(params.get('lead_department'), "lead_department")
         validated['originator'] = self._validate_str_list_param(params.get('originator'), "originator")
 
-        # Resource-specific validation for title and process_type
-        if resource in ["drucksache", "drucksache-text", "vorgang", "vorgangsposition"]:
-            validated['title'] = self._validate_str_list_param(params.get('title'), "title")
-            validated['process_type'] = self._validate_str_list_param(params.get('process_type'), "process_type")
-            validated['process_type_notation'] = self._validate_int_list_param(params.get('process_type_notation'), "process_type_notation")
+        validated['title'] = self._validate_str_list_param(params.get('title'), "title")
+        validated['process_type'] = self._validate_str_list_param(params.get('process_type'), "process_type")
+        validated['process_type_notation'] = self._validate_int_list_param(params.get('process_type_notation'), "process_type_notation")
 
-            drucksache_type = params.get('drucksache_type')
-            if drucksache_type is not None and not isinstance(drucksache_type, str):
-                raise ValueError("drucksache_type must be a string.")
-            validated['drucksache_type'] = drucksache_type
-        else:
-            # Ensure these params aren't used with wrong resources
-            if params.get('title') is not None:
-                raise ValueError("Title must be combined with a document or process")
-            if params.get('drucksache_type') is not None:
-                raise ValueError("Drucksache type must be combined with a document or process")
-            validated['title'] = None
-            validated['process_type'] = None
-            validated['process_type_notation'] = None
-            validated['drucksache_type'] = None
+        drucksache_type = params.get('drucksache_type')
+        if drucksache_type is not None and not isinstance(drucksache_type, str):
+            raise ValueError("drucksache_type must be a string.")
+        validated['drucksache_type'] = drucksache_type
 
         # Validate reference ID parameters and their resource compatibility
         validated.update(self._validate_reference_ids(
@@ -343,8 +379,8 @@ class btaConnection:
         ))
 
         # Add simple passthrough params (before resource-specific validation)
-        validated['date_start'] = params.get('date_start')
-        validated['date_end'] = params.get('date_end')
+        validated['date_start'] = to_date_string(params.get('date_start'), "date_start")
+        validated['date_end'] = to_date_string(params.get('date_end'), "date_end")
         validated['institution'] = params.get('institution')
         validated['document_art'] = params.get('document_art')
 
@@ -359,40 +395,13 @@ class btaConnection:
 
     def _build_api_payload(self, validated_params: dict) -> dict:
         """Build the API request payload from validated parameters."""
-        return {
-            "apikey": self.apikey,
-            "format": "json",  # Will be handled separately for object/pandas formats
-            "f.id": validated_params.get('fid'),
-            "f.datum.start": validated_params.get('date_start'),
-            "f.datum.end": validated_params.get('date_end'),
-            "f.aktualisiert.start": validated_params.get('updated_since'),
-            "f.aktualisiert.end": validated_params.get('updated_until'),
-            "f.drucksache": validated_params.get('drucksacheID'),
-            "f.plenarprotokoll": validated_params.get('plenaryprotocolID'),
-            "f.vorgang": validated_params.get('processID'),
-            "f.zuordnung": validated_params.get('institution'),
-            "f.deskriptor": validated_params.get('descriptor'),
-            "f.sachgebiet": validated_params.get('sachgebiet'),
-            "f.drucksachetyp": validated_params.get('drucksache_type'),
-            "f.vorgangstyp": validated_params.get('process_type'),
-            "f.vorgangstyp_notation": validated_params.get('process_type_notation'),
-            "f.titel": validated_params.get('title'),
-            "f.aktivitaet": validated_params.get('activityID'),
-            "f.wahlperiode": validated_params.get('legislative_period'),
-            "f.person": validated_params.get('person_name'),
-            "f.person_id": validated_params.get('personID'),
-            "f.dokumentnummer": validated_params.get('document_number'),
-            "f.dokumentart": validated_params.get('document_art'),
-            "f.frage_nummer": validated_params.get('question_number'),
-            "f.gesta": validated_params.get('gesta_id'),
-            "f.vorgangsposition_id": validated_params.get('procedure_positionID'),
-            "f.beratungsstand": validated_params.get('consultation_status'),
-            "f.verkuendung_fundstelle": validated_params.get('publication_reference'),
-            "f.initiative": validated_params.get('initiative'),
-            "f.ressort_fdf": validated_params.get('lead_department'),
-            "f.urheber": validated_params.get('originator'),
-            "cursor": None
-        }
+        # The API key is sent in the Authorization header (see _execute_paginated_query),
+        # so it never shows up in URLs, logs or exception messages.
+        payload: Dict[str, Any] = {"format": "json"}
+        for param_name, api_filter in FILTER_PARAMS.items():
+            payload[api_filter] = validated_params.get(param_name)
+        payload["cursor"] = None
+        return payload
 
     def _execute_paginated_query(self, resource: Resource, payload: dict, limit: int) -> List[dict]:
         """Execute the API query with automatic pagination."""
@@ -403,7 +412,8 @@ class btaConnection:
         continue_pagination = True
 
         while continue_pagination:
-            r = self.session.get(r_url, params=payload, timeout=30)
+            r = self.session.get(r_url, params=payload, timeout=30,
+                                 headers={"Authorization": f"ApiKey {self.apikey}"})
             logger.debug(r.url)
 
             if r.status_code == requests.codes.ok:
@@ -411,7 +421,7 @@ class btaConnection:
                 documents_on_page = content.get("documents", [])
 
                 if content.get("numFound", 0) == 0:
-                    logging.info("No data was returned.")
+                    logger.info("No data was returned.")
                     continue_pagination = False
                 else:
                     data.extend(documents_on_page)
@@ -498,6 +508,13 @@ class btaConnection:
 
         # Handle pandas format
         if return_format == "pandas":
+            try:
+                import pandas as pd
+            except ImportError as e:
+                raise ImportError(
+                    "return_format='pandas' requires pandas. Install it with "
+                    "'pip install bundestag_api[pandas]' or 'conda install pandas'."
+                ) from e
             return pd.json_normalize(data)
 
         # Default: return JSON (list of dicts)
@@ -508,8 +525,8 @@ class btaConnection:
               return_format: ReturnFormat ="json",
               limit: int = 100,
               fid: Optional[Union[int, List[int]]] = None,
-              date_start: Optional[str] = None,
-              date_end: Optional[str] = None,
+              date_start: Optional[Union[str, date]] = None,
+              date_end: Optional[Union[str, date]] = None,
               updated_since: Optional[Union[str, datetime]] = None,
               updated_until: Optional[Union[str, datetime]] = None,
               institution: Optional[Institution] = None,
@@ -547,19 +564,19 @@ class btaConnection:
                 drucksache, drucksache-text, person, plenarprotokoll,
                 plenarprotokoll-text, vorgang or vorgangsposition
             return_format: str, optional
-                Return format of the data. Defaults to json. XML not implemented
-                yet. Other option is "object" which will return results as class
-                objects
+                Return format of the data. Defaults to "json" (list of dicts).
+                "object" returns model class instances, "pandas" returns a
+                DataFrame (requires pandas).
             limit: int, optional
                 Number of maximal results to be returned. Defaults to 100
             fid: int/list, optional
                 ID of an entity. Can be a list to retrieve more than one entity
-            date_start: str, optional
-                Date after which entities should be retrieved. Format
-                is "YYYY-MM-DD"
-            date_end: str, optional
-                Date before which entities should be retrieved. Format
-                is "YYYY-MM-DD"
+            date_start: str/date, optional
+                Earliest document date (inclusive). String "YYYY-MM-DD" or a
+                datetime.date / datetime.datetime object
+            date_end: str/date, optional
+                Latest document date (inclusive). String "YYYY-MM-DD" or a
+                datetime.date / datetime.datetime object
             updated_since: str, optional
                 Date and time after which updated documents are to be retrieved
             updated_until: str, optional
@@ -595,7 +612,6 @@ class btaConnection:
                 Keyword that can be found in the title of documents. Multiple 
                 strings can be supplied as a list and will be joined via
                 an OR-search.
-            fulltext: boolean
             activityID: int, optional
                 Entity ID of an activity. Can be used to select procedure positions.
             legislative_period: int/list, optional
@@ -640,6 +656,7 @@ class btaConnection:
             date_end=date_end,
             updated_since=updated_since,
             updated_until=updated_until,
+            institution=institution,
             drucksacheID=drucksacheID,
             plenaryprotocolID=plenaryprotocolID,
             processID=processID,

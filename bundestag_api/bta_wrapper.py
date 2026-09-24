@@ -13,7 +13,8 @@ from ._version import __version__
 from .models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, Plenarprotokoll
 from .utils import to_iso8601, to_date_string
 from .speeches import ParsedProtocol, parse_protocol_xml
-from .decisions import VOTING_METHODS, flatten_decisions
+from .decisions import flatten_decisions
+from .vocabulary import DOCUMENT_ARTS, INSTITUTIONS, VOTING_METHODS
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -233,8 +234,6 @@ class btaConnection:
     def _validate_basic_params(self, resource: Resource, return_format: str, limit: int,
                               institution: Optional[str], fulltext: bool) -> Resource:
         """Validate basic query parameters and adjust resource for fulltext if needed."""
-        INSTITUTIONS = ["BT", "BR", "BV", "EK"]
-
         # Validate resource
         if resource not in Resource.__args__:
             raise ValueError("No or wrong resource")
@@ -245,7 +244,8 @@ class btaConnection:
 
         # Validate institution
         if institution is not None and institution not in INSTITUTIONS:
-            raise ValueError("Unknown institution")
+            raise ValueError("Unknown institution. Use one of: "
+                             + ", ".join(f"{k} ({v})" for k, v in INSTITUTIONS.items()))
 
         # Validate limit
         if not isinstance(limit, int) or limit <= 0:
@@ -388,7 +388,7 @@ class btaConnection:
         validated['document_art'] = params.get('document_art')
 
         # Validate document_art value
-        if validated['document_art'] is not None and validated['document_art'] not in ["Drucksache", "Plenarprotokoll"]:
+        if validated['document_art'] is not None and validated['document_art'] not in DOCUMENT_ARTS:
             raise ValueError("document_art must be either 'Drucksache' or 'Plenarprotokoll'")
 
         # Validate resource-specific parameters
@@ -1194,6 +1194,70 @@ class btaConnection:
         positions = self.search_procedureposition(limit=limit, **filters)
         rows = self._filter_decisions(flatten_decisions(positions), voting_method)
         return self._format_rows(rows, return_format)
+
+    # vocabularies
+    def discover_values(self,
+                        resource: Resource,
+                        field: str,
+                        limit: int = 1000,
+                        return_format: Literal["json", "pandas"] = "json",
+                        **filters) -> Union[List[dict], pd.DataFrame]:
+        """
+        Counts which values of a field actually occur in the data.
+
+        Useful for open vocabularies that are not fixed in the API
+        specification, e.g. subject areas, document types or consultation
+        states. The result shows the exact spelling to use in filters.
+
+        Parameters
+        ----------
+        resource: str
+            The resource to sample, e.g. "vorgang" or "drucksache".
+        field: str
+            The field to count. Use dots for nested fields, e.g. "sachgebiet",
+            "beratungsstand", "drucksachetyp", "urheber.titel",
+            "deskriptor.name" or "ressort.titel". Lists are counted per element.
+        limit: int, optional
+            Number of records to sample. Defaults to 1000. Rare values may be
+            missing from a small sample.
+        return_format: str, optional
+            "json" (list of {"value", "count"} dicts, default) or "pandas".
+        **filters:
+            Filters to restrict the sample, e.g. legislative_period=20.
+
+        Returns
+        -------
+        Union[List[dict], pd.DataFrame]
+            Values sorted by frequency, most frequent first.
+
+        Examples
+        --------
+        >>> bt.discover_values("vorgang", "sachgebiet", legislative_period=20)
+        >>> bt.discover_values("drucksache", "drucksachetyp", institution="BT")
+        """
+        if return_format not in ("json", "pandas"):
+            raise ValueError("return_format must be 'json' or 'pandas'.")
+        if not isinstance(field, str) or not field:
+            raise ValueError("field must be a non-empty string, e.g. 'sachgebiet'.")
+        records = self.query(resource=resource, limit=limit, **filters)
+        counts: Dict[str, int] = {}
+        for record in records:
+            for value in self._values_at_path(record, field.split(".")):
+                counts[value] = counts.get(value, 0) + 1
+        rows = [{"value": v, "count": c}
+                for v, c in sorted(counts.items(), key=lambda item: (-item[1], str(item[0])))]
+        return self._format_rows(rows, return_format)
+
+    @classmethod
+    def _values_at_path(cls, node: Any, path: List[str]) -> List[Any]:
+        """Return all scalar values at a dotted path, flattening lists."""
+        if isinstance(node, list):
+            return [v for item in node for v in cls._values_at_path(item, path)]
+        if not path:
+            return [] if node is None or isinstance(node, dict) else [node]
+        if not isinstance(node, dict):
+            return []
+        return cls._values_at_path(node.get(path[0]), path[1:])
 
     # utility
     def list_methods(self):

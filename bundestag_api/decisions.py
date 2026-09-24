@@ -18,14 +18,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional
 
-# Voting methods as defined in the DIP OpenAPI specification (Beschlussfassung.abstimmungsart).
-VOTING_METHODS = (
-    "Abstimmung durch Aufruf der Länder",
-    "Geheime Wahl",
-    "Hammelsprung",
-    "Namentliche Abstimmung",
-    "Verhältniswahl",
-)
+from .vocabulary import VOTING_METHODS
 
 
 def _to_int(value: Any) -> Optional[int]:

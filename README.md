@@ -243,6 +243,40 @@ API does not support for a resource (e.g. `descriptor` for documents), the packa
 raises a `ValueError` naming the resources where the filter can be used, instead
 of silently returning unfiltered data.
 
+### Finding the Right Filter Values
+
+Many filters expect exact German terms from the Bundestag's vocabulary. Fixed values
+are available as constants:
+
+```python
+from bundestag_api import vocabulary as voc
+
+voc.INSTITUTIONS              # {"BT": "Bundestag", "BR": "Bundesrat", ...}
+voc.VOTING_METHODS            # ("Namentliche Abstimmung", "Hammelsprung", ...)
+voc.FEDERAL_STATES            # the 16 Länder
+voc.LEGISLATIVE_PERIODS       # {19: (date(2017, 10, 24), date(2021, 10, 25)), ...}
+voc.CURRENT_LEGISLATIVE_PERIOD
+
+# Which legislative period was it?
+bundestag_api.legislative_period_for("2019-05-01")    # 19
+bundestag_api.legislative_period_dates(19)            # ("2017-10-24", "2021-10-25")
+```
+
+Other vocabularies (subject areas, document types, consultation states, ...) are open and
+change over time. `discover_values` counts which values actually occur in the data, with
+their exact spelling:
+
+```python
+bt.discover_values("vorgang", "sachgebiet", legislative_period=20)
+# -> list of {"value": <subject area>, "count": <number of procedures>}, most frequent first
+
+bt.discover_values("drucksache", "drucksachetyp", institution="BT", return_format="pandas")
+bt.discover_values("vorgang", "beratungsstand")
+bt.discover_values("drucksache", "urheber.titel")      # nested fields with dots
+```
+
+It samples the most recent 1000 records by default (`limit=`), so very rare values may be missing.
+
 ### Handling Large Datasets
 
 ```python
@@ -422,6 +456,7 @@ monthly_counts = df.groupby(df['datum'].dt.to_period('M')).size()
 - Filter by `legislative_period` or date range to reduce the result size
 
 **Getting empty results?**
+- Check the exact spelling of filter values with `bt.discover_values(...)`
 - Check date formats (YYYY-MM-DD)
 - Verify institution codes (BT, BR, BV, EK)
 - Start with broader searches, then add filters

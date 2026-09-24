@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from .vocabulary import INSTITUTIONS
 
 
 def _to_int(value):
@@ -101,10 +102,8 @@ class Drucksache:
 
     def __init__(self, dictionary):
         self.btid = _to_int(dictionary["id"])
-        self.publisher = dictionary.get("herausgeber")
-        if self.publisher == "BT": self.publisher = "Bundestag"
-        if self.publisher == "BR": self.publisher = "Bundesrat"
-        
+        self.publisher = INSTITUTIONS.get(dictionary.get("herausgeber"), dictionary.get("herausgeber"))
+
         self.originator = dictionary.get("urheber")
         self.author_nr = dictionary.get("autoren_anzahl")
         self.ressort = dictionary.get("ressort")
@@ -240,14 +239,8 @@ class Vorgangsposition:
         # Decisions ("Beschlussfassung") taken in this step, as list of dicts
         self.decisions = dictionary.get("beschlussfassung") or []
 
-        self.institution = None
-        if "zuordnung" in dictionary:
-            if dictionary["zuordnung"] == "BT":
-                self.institution = "Bundestag"
-            elif dictionary["zuordnung"] == "BR":
-                self.institution = "Bundesrat"
-            elif dictionary["zuordnung"] is not None and dictionary["zuordnung"] != "BR" and dictionary["zuordnung"] != "BT":
-                self.institution = dictionary["zuordnung"]
+        zuordnung = dictionary.get("zuordnung")
+        self.institution = INSTITUTIONS.get(zuordnung, zuordnung)
 
     def __str__(self):
         return f'{self.instance}: ({self.procedureID}) {self.processtype} - {self.title} - {self.date}'
@@ -266,9 +259,7 @@ class Plenarprotokoll:
         self.title = dictionary.get("titel")
         self.instance = dictionary.get("typ")
         
-        self.publisher = dictionary.get("herausgeber")
-        if self.publisher == "BT": self.publisher = "Bundestag"
-        if self.publisher == "BR": self.publisher = "Bundesrat"
+        self.publisher = INSTITUTIONS.get(dictionary.get("herausgeber"), dictionary.get("herausgeber"))
 
         self.legislativeperiod = dictionary.get("wahlperiode")
         self.text = dictionary.get("text")

@@ -251,8 +251,12 @@ def test_sync_does_not_advance_checkpoint_when_formatting_fails(make_conn, tmp_p
     docs = _docs(2, {0: "2024-06-02T10:00:00+02:00", 1: "2024-06-03T10:00:00+02:00"})
     conn = make_conn(docs)
 
-    def no_pandas(*args, **kwargs):
-        raise ImportError("return_format='pandas' requires pandas")
+    original_format = conn._format_results
+
+    def no_pandas(data, return_format, resource):
+        if return_format == "pandas":
+            raise ImportError("return_format='pandas' requires pandas")
+        return original_format(data, return_format, resource)
     monkeypatch.setattr(conn, "_format_results", no_pandas)
     with pytest.raises(ImportError):
         conn.sync("drucksache", state_file=str(state_file), since="2024-06-01T00:00:00",

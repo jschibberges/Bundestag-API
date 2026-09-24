@@ -15,6 +15,10 @@ def to_iso8601(value):
     if value is None:
         return None
     if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            # keep the UTC offset, e.g. 2024-06-01T10:00:00+02:00
+            return value.replace(microsecond=0).isoformat()
+        # naive datetimes are interpreted by the API as local time in Berlin
         return value.strftime("%Y-%m-%dT%H:%M:%S")
     if isinstance(value, str):
         return value

@@ -279,19 +279,69 @@ It samples the most recent 1000 records by default (`limit=`), so very rare valu
 
 ### Handling Large Datasets
 
-```python
-# Get all documents (automatically handles pagination)
-all_documents = bt.search_document(
-    date_start="2024-01-01",
-    limit=1000  # Will make multiple API calls as needed
-)
+**Count first.** `count` returns the number of matching records with a single request:
 
-# Process data in chunks for memory efficiency
-for i in range(0, len(all_documents), 100):
-    chunk = all_documents[i:i+100]
-    # Process your chunk here
-    process_documents(chunk)
+```python
+bt.count("drucksache", legislative_period=20, drucksache_type="Kleine Anfrage")
 ```
+
+**Get everything.** By default, searches return at most 100 records (`limit=100`).
+Use `limit=None` to fetch all matching records; pagination is handled automatically.
+If a result was cut off by `limit`, the package logs how many records matched in total.
+
+```python
+all_questions = bt.search_document(legislative_period=20, drucksache_type="Kleine Anfrage", limit=None)
+```
+
+**Stream instead of loading.** `iter_query` requests one page at a time while you iterate.
+Memory use stays constant, and you can stop whenever you like:
+
+```python
+import csv
+
+with open("documents.csv", "w", newline="", encoding="utf-8") as f:
+    writer = csv.writer(f)
+    for doc in bt.iter_query("drucksache", legislative_period=20):
+        writer.writerow([doc["id"], doc["datum"], doc["drucksachetyp"], doc["titel"]])
+```
+
+`iter_query` accepts the same filters as the search functions, plus `return_format="object"`
+and `limit`. Misspelled filter names raise an error instead of being ignored.
+
+### Keeping Your Data Up to Date (Incremental Sync)
+
+Every record carries an `aktualisiert` timestamp. Instead of downloading everything again,
+fetch only what changed:
+
+```python
+result = bt.fetch_updates("vorgang", since="2024-06-01T00:00:00", institution="BT")
+print(len(result), "changed procedures")
+result.records      # list of dicts (or objects / DataFrame via return_format)
+result.checkpoint   # latest 'aktualisiert' value, use it as `since` next time
+```
+
+For scheduled jobs (e.g. a daily cron job or GitHub Action), `sync` stores the checkpoint in a
+JSON file and returns only records that are new since the last run, without duplicates:
+
+```python
+result = bt.sync(
+    "drucksache",
+    state_file="dip_state.json",     # created on the first run
+    since="2024-06-01T00:00:00",     # only used on the first run
+    institution="BT",
+    drucksache_type="Gesetzentwurf",
+)
+for doc in result.records:
+    print(doc["dokumentnummer"], doc["titel"])
+```
+
+Good to know:
+- Times without a UTC offset are interpreted by the API as local time in Berlin. You can also
+  pass `"2024-06-01T00:00:00+02:00"` or a timezone-aware `datetime`.
+- "Updated" includes corrections to existing records, so a sync can return old documents
+  whose metadata changed.
+- Each combination of resource and filters has its own checkpoint in the state file.
+- The state file is only written after a successful run, so a failed run is simply repeated.
 
 ### Parallel Processing
 
@@ -441,6 +491,12 @@ monthly_counts = df.groupby(df['datum'].dt.to_period('M')).size()
 - `search_decisions(limit=100, voting_method=None, **filters)` - Decisions in procedure steps matching the filters
 - `bundestag_api.flatten_decisions(positions)` - Turn procedure positions you already have into decision rows
 
+### Large Datasets and Updates
+- `count(resource, **filters)` - Number of matching records (one request)
+- `iter_query(resource, **filters)` - Iterate over results page by page
+- `fetch_updates(resource, since, **filters)` - Records created or updated since a point in time
+- `sync(resource, state_file, **filters)` - Like `fetch_updates`, but remembers the checkpoint between runs
+
 ### Get Functions (by ID)
 - `get_document(btid, **options)` - Get specific documents
 - `get_procedure(btid, **options)` - Get specific procedures
@@ -452,7 +508,8 @@ monthly_counts = df.groupby(df['datum'].dt.to_period('M')).size()
 ## Common Issues & Solutions
 
 **Memory issues with large datasets?**
-- Use smaller `limit` values and process in chunks
+- Stream results with `bt.iter_query(...)` instead of loading everything at once
+- Check the size first with `bt.count(...)`
 - Filter by `legislative_period` or date range to reduce the result size
 
 **Getting empty results?**

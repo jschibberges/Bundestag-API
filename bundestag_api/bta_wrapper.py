@@ -8,13 +8,14 @@ from urllib3.util import Retry
 import logging
 import time
 import random
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union, Literal, cast
+from typing import TYPE_CHECKING, Any, Dict, Iterable, Iterator, List, Optional, Tuple, Union, Literal, cast
 from ._version import __version__
 from .models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, Plenarprotokoll
 from .utils import to_iso8601, to_date_string
 from .speeches import ParsedProtocol, parse_protocol_xml
 from .decisions import flatten_decisions
 from .vocabulary import DOCUMENT_ARTS, INSTITUTIONS, VOTING_METHODS
+from .sync import SyncResult, latest_update, load_state, save_state, state_key
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -93,6 +94,18 @@ SUPPORTED_FILTERS = {
         "f.vorgangsposition_id", "f.vorgangstyp", "f.vorgangstyp_notation", "f.zuordnung"},
     "person": _COMMON_FILTERS | {"f.person"},
 }
+
+MODEL_MAP = {
+    "aktivitaet": Aktivitaet,
+    "drucksache": Drucksache,
+    "drucksache-text": Drucksache,
+    "person": Person,
+    "plenarprotokoll": Plenarprotokoll,
+    "plenarprotokoll-text": Plenarprotokoll,
+    "vorgang": Vorgang,
+    "vorgangsposition": Vorgangsposition,
+}
+
 
 class btaConnection:
     """This class handles the API authentication and provides search functionality
@@ -231,7 +244,7 @@ class btaConnection:
                 raise ValueError(f"All items in {param_name} must be convertible to integers.") from e
         return param_value
 
-    def _validate_basic_params(self, resource: Resource, return_format: str, limit: int,
+    def _validate_basic_params(self, resource: Resource, return_format: str, limit: Optional[int],
                               institution: Optional[str], fulltext: bool) -> Resource:
         """Validate basic query parameters and adjust resource for fulltext if needed."""
         # Validate resource
@@ -247,9 +260,9 @@ class btaConnection:
             raise ValueError("Unknown institution. Use one of: "
                              + ", ".join(f"{k} ({v})" for k, v in INSTITUTIONS.items()))
 
-        # Validate limit
-        if not isinstance(limit, int) or limit <= 0:
-            raise ValueError("limit must be an integer larger than zero")
+        # Validate limit (None = no limit, fetch all results)
+        if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0):
+            raise ValueError("limit must be an integer larger than zero, or None for all results")
 
         # Handle fulltext resource routing
         if fulltext:
@@ -406,108 +419,117 @@ class btaConnection:
         payload["cursor"] = None
         return payload
 
-    def _execute_paginated_query(self, resource: Resource, payload: dict, limit: int) -> List[dict]:
-        """Execute the API query with automatic pagination."""
-        BASE_URL = "https://search.dip.bundestag.de/api/v1/"
-        r_url = BASE_URL + resource
+    BASE_URL = "https://search.dip.bundestag.de/api/v1/"
 
-        data = []
-        continue_pagination = True
+    def _request_page(self, r_url: str, payload: dict) -> dict:
+        """Request a single page from the API and translate HTTP errors into exceptions."""
+        r = self.session.get(r_url, params=payload, timeout=30,
+                             headers={"Authorization": f"ApiKey {self.apikey}"})
+        logger.debug(r.url)
 
-        while continue_pagination:
-            r = self.session.get(r_url, params=payload, timeout=30,
-                                 headers={"Authorization": f"ApiKey {self.apikey}"})
-            logger.debug(r.url)
+        if r.status_code == requests.codes.ok:
+            return r.json()
 
-            if r.status_code == requests.codes.ok:
-                content = r.json()
-                documents_on_page = content.get("documents", [])
-
-                if content.get("numFound", 0) == 0:
-                    logger.info("No data was returned.")
-                    continue_pagination = False
-                else:
-                    data.extend(documents_on_page)
-                    next_cursor = content.get("cursor")
-
-                    # Stop paginating if limit reached or no more pages
-                    if len(data) >= limit:
-                        data = data[0:limit]
-                        continue_pagination = False
-                    elif not next_cursor or payload["cursor"] == next_cursor:
-                        continue_pagination = False
-                    else:
-                        payload["cursor"] = next_cursor
-                        time.sleep(self.delay * random.uniform(0.8, 1.2) if self.delay > 0 else 0.0)
-
-            elif r.status_code in (400, 403):
-                try:
-                    body = r.text.lower()
-                except Exception:
-                    body = ""
-                bot_signals = (
-                    '.enodia' in r.url
-                    or '/challenge' in r.url
-                    or any(kw in body for kw in ('enodia', 'captcha', 'bot protection', 'access denied'))
+        if r.status_code in (400, 403):
+            try:
+                body = r.text.lower()
+            except Exception:
+                body = ""
+            bot_signals = (
+                '.enodia' in r.url
+                or '/challenge' in r.url
+                or any(kw in body for kw in ('enodia', 'captcha', 'bot protection', 'access denied'))
+            )
+            if bot_signals or r.status_code == 403:
+                msg = (
+                    "Bot protection detected (Enodia challenge). The Bundestag API blocked this request.\n"
+                    "Possible causes:\n"
+                    "  • Too many parallel requests (API limit: 25 concurrent)\n"
+                    "  • Too many requests per second (no delay between paginated calls)\n"
+                    "  • Shared generic API key is being used by many scripts simultaneously\n"
+                    "Solutions:\n"
+                    "  1. Add a delay: btaConnection(delay=0.5)\n"
+                    "  2. Reduce parallel workers to ≤5 in ThreadPoolExecutor\n"
+                    "  3. Use a personal API key: https://dip.bundestag.de/\n"
                 )
-                if bot_signals or r.status_code == 403:
-                    msg = (
-                        "Bot protection detected (Enodia challenge). The Bundestag API blocked this request.\n"
-                        "Possible causes:\n"
-                        "  • Too many parallel requests (API limit: 25 concurrent)\n"
-                        "  • Too many requests per second (no delay between paginated calls)\n"
-                        "  • Shared generic API key is being used by many scripts simultaneously\n"
-                        "Solutions:\n"
-                        "  1. Add a delay: btaConnection(delay=0.5)\n"
-                        "  2. Reduce parallel workers to ≤5 in ThreadPoolExecutor\n"
-                        "  3. Use a personal API key: https://dip.bundestag.de/\n"
-                    )
-                    logger.error(msg)
-                    raise ConnectionError(msg)
-                else:
-                    msg = f"A syntax error occurred. Code {r.status_code}: {r.reason}"
-                    logger.error(msg)
-                    raise ValueError(f"Bad request to Bundestag API: {r.reason}")
-
-            elif r.status_code == 401:
-                msg = f"An authorization error occurred. Likely an error with your API key. Code {r.status_code}: {r.reason}"
                 logger.error(msg)
-                raise ValueError(f"Authorization failed. Check your API key: {r.reason}")
+                raise ConnectionError(msg)
+            msg = f"A syntax error occurred. Code {r.status_code}: {r.reason}"
+            logger.error(msg)
+            raise ValueError(f"Bad request to Bundestag API: {r.reason}")
 
-            elif r.status_code == 404:
-                msg = f"The API is not reachable. Code {r.status_code}: {r.reason}"
-                logger.error(msg)
-                raise ConnectionError(f"Bundestag API not reachable: {r.reason}")
+        if r.status_code == 401:
+            msg = f"An authorization error occurred. Likely an error with your API key. Code {r.status_code}: {r.reason}"
+            logger.error(msg)
+            raise ValueError(f"Authorization failed. Check your API key: {r.reason}")
 
-            else:
-                msg = f"An error occurred. Code {r.status_code}: {r.reason}"
-                logger.error(msg)
-                raise requests.HTTPError(f"HTTP {r.status_code}: {r.reason}")
+        if r.status_code == 404:
+            msg = f"The API is not reachable. Code {r.status_code}: {r.reason}"
+            logger.error(msg)
+            raise ConnectionError(f"Bundestag API not reachable: {r.reason}")
 
-        self._sanitize_pdf_urls(data)
+        msg = f"An error occurred. Code {r.status_code}: {r.reason}"
+        logger.error(msg)
+        raise requests.HTTPError(f"HTTP {r.status_code}: {r.reason}")
+
+    def _iter_documents(self, resource: Resource, payload: dict, limit: Optional[int],
+                        stats: Optional[dict] = None) -> Iterator[dict]:
+        """Yield documents page by page, following the cursor until the end or the limit.
+
+        If `stats` is given, the total number of matches ('numFound') is stored in it.
+        """
+        r_url = self.BASE_URL + resource
+        yielded = 0
+        while True:
+            content = self._request_page(r_url, payload)
+            num_found = content.get("numFound", 0)
+            if stats is not None and "numFound" not in stats:
+                stats["numFound"] = num_found
+            if num_found == 0:
+                logger.info("No data was returned.")
+                return
+
+            documents = content.get("documents") or []
+            self._sanitize_pdf_urls(documents)
+            for document in documents:
+                if limit is not None and yielded >= limit:
+                    return
+                yield document
+                yielded += 1
+
+            # Stop paginating if limit reached or no more pages
+            next_cursor = content.get("cursor")
+            if limit is not None and yielded >= limit:
+                return
+            if not next_cursor or payload["cursor"] == next_cursor:
+                return
+            payload["cursor"] = next_cursor
+            time.sleep(self.delay * random.uniform(0.8, 1.2) if self.delay > 0 else 0.0)
+
+    def _execute_paginated_query(self, resource: Resource, payload: dict, limit: Optional[int]) -> List[dict]:
+        """Execute the API query with automatic pagination."""
+        stats: dict = {}
+        data = list(self._iter_documents(resource, payload, limit, stats))
+        num_found = stats.get("numFound", 0)
         if len(data) == 0:
             logger.info("No data was returned.")
-
+        elif limit is not None and num_found > len(data):
+            logger.info(
+                "Returned %d of %d matching records (limit=%d). Increase limit, use limit=None "
+                "or iter_query() to get more.", len(data), num_found, limit)
         return data
+
+    def _to_models(self, data: List[dict], resource: Resource) -> List[Any]:
+        """Convert raw records into model objects."""
+        model_class = MODEL_MAP[resource]
+        return [model_class(item) for item in data]
 
     def _format_results(self, data: List[dict], return_format: str, resource: Resource) -> Union[List[Any], pd.DataFrame]:
         """Format the query results according to the requested return format."""
 
         # Handle object format
         if return_format == "object":
-            model_map = {
-                "aktivitaet": Aktivitaet,
-                "drucksache": Drucksache,
-                "drucksache-text": Drucksache,
-                "person": Person,
-                "plenarprotokoll": Plenarprotokoll,
-                "plenarprotokoll-text": Plenarprotokoll,
-                "vorgang": Vorgang,
-                "vorgangsposition": Vorgangsposition,
-            }
-            model_class = model_map.get(resource)
-            if model_class:
-                return [model_class(item) for item in data]
+            return self._to_models(data, resource)
 
         # Handle pandas format
         if return_format == "pandas":
@@ -526,7 +548,7 @@ class btaConnection:
     def query(self,
               resource: Resource,
               return_format: ReturnFormat ="json",
-              limit: int = 100,
+              limit: Optional[int] = 100,
               fid: Optional[Union[int, List[int]]] = None,
               date_start: Optional[Union[str, date]] = None,
               date_end: Optional[Union[str, date]] = None,
@@ -571,7 +593,9 @@ class btaConnection:
                 "object" returns model class instances, "pandas" returns a
                 DataFrame (requires pandas).
             limit: int, optional
-                Number of maximal results to be returned. Defaults to 100
+                Number of maximal results to be returned. Defaults to 100.
+                Use None to retrieve all matching results (see also `count`
+                and `iter_query` for large datasets).
             fid: int/list, optional
                 ID of an entity. Can be a list to retrieve more than one entity
             date_start: str/date, optional
@@ -648,51 +672,90 @@ class btaConnection:
 
         """
 
-        # 1. Validate basic parameters
-        resource = self._validate_basic_params(resource, return_format, limit, institution, fulltext)
+        # 1. Validate all parameters and build the API payload
+        filter_params = {name: value for name, value in locals().items() if name in FILTER_PARAMS}
+        resource, payload = self._prepare_query(resource, return_format, limit, fulltext, **filter_params)
 
-        # 2. Validate and normalize all filter parameters
-        validated_params = self._validate_and_normalize_params(
-            resource=resource,
-            fid=fid,
-            date_start=date_start,
-            date_end=date_end,
-            updated_since=updated_since,
-            updated_until=updated_until,
-            institution=institution,
-            drucksacheID=drucksacheID,
-            plenaryprotocolID=plenaryprotocolID,
-            processID=processID,
-            descriptor=descriptor,
-            sachgebiet=sachgebiet,
-            drucksache_type=drucksache_type,
-            process_type=process_type,
-            process_type_notation=process_type_notation,
-            title=title,
-            activityID=activityID,
-            legislative_period=legislative_period,
-            person_name=person_name,
-            personID=personID,
-            document_number=document_number,
-            document_art=document_art,
-            question_number=question_number,
-            gesta_id=gesta_id,
-            procedure_positionID=procedure_positionID,
-            consultation_status=consultation_status,
-            publication_reference=publication_reference,
-            initiative=initiative,
-            lead_department=lead_department,
-            originator=originator
-        )
-
-        # 3. Build API payload
-        payload = self._build_api_payload(validated_params)
-
-        # 4. Execute paginated query
+        # 2. Execute paginated query
         data = self._execute_paginated_query(resource, payload, limit)
 
-        # 5. Format and return results
+        # 3. Format and return results
         return self._format_results(data, return_format, resource)
+
+    def _prepare_query(self, resource: Resource, return_format: str, limit: Optional[int],
+                       fulltext: bool, **filter_params) -> Tuple[Resource, dict]:
+        """Validate all parameters and return the (possibly fulltext) resource and API payload."""
+        unknown = set(filter_params) - set(FILTER_PARAMS)
+        if unknown:
+            raise TypeError(
+                f"Unknown filter(s): {', '.join(sorted(unknown))}. "
+                f"Valid filters: {', '.join(FILTER_PARAMS)}"
+            )
+        resource = self._validate_basic_params(
+            resource, return_format, limit, filter_params.get("institution"), fulltext)
+        validated_params = self._validate_and_normalize_params(resource=resource, **filter_params)
+        return resource, self._build_api_payload(validated_params)
+
+    def iter_query(self,
+                   resource: Resource,
+                   return_format: Literal["json", "object"] = "json",
+                   limit: Optional[int] = None,
+                   fulltext: bool = False,
+                   **filters) -> Iterator[Any]:
+        """
+        Iterates over search results page by page instead of loading all at once.
+
+        Accepts the same filters as `query`. Pages are only requested while you
+        iterate, so this is suitable for large datasets: memory use stays constant
+        and you can stop at any time.
+
+        Parameters
+        ----------
+        resource: str
+            The resource type to be queried, see `query`.
+        return_format: str, optional
+            "json" (dicts, default) or "object" (model instances).
+        limit: int, optional
+            Maximum number of records. Defaults to None (all matching records).
+        fulltext: bool, optional
+            Request the fulltext resource ('drucksache' and 'plenarprotokoll' only).
+        **filters:
+            Any filter accepted by `query`.
+
+        Yields
+        ------
+        dict or model object
+
+        Examples
+        --------
+        >>> for doc in bt.iter_query("drucksache", legislative_period=20):
+        ...     process(doc)
+        """
+        if return_format not in ("json", "object"):
+            raise ValueError("return_format must be 'json' or 'object' for iter_query.")
+        # Validate eagerly so errors surface when calling iter_query, not on first next()
+        resource, payload = self._prepare_query(resource, return_format, limit, fulltext, **filters)
+
+        def generator():
+            for document in self._iter_documents(resource, payload, limit):
+                yield MODEL_MAP[resource](document) if return_format == "object" else document
+
+        return generator()
+
+    def count(self, resource: Resource, fulltext: bool = False, **filters) -> int:
+        """
+        Returns the number of records matching the filters, with a single request.
+
+        Accepts the same filters as `query`. Useful to check the size of a
+        dataset before downloading it.
+
+        Examples
+        --------
+        >>> bt.count("drucksache", legislative_period=20, drucksache_type="Kleine Anfrage")
+        """
+        resource, payload = self._prepare_query(resource, "json", 1, fulltext, **filters)
+        content = self._request_page(self.BASE_URL + resource, payload)
+        return int(content.get("numFound", 0))
 
     # The following two methods are used to construct the specific search and get methods
     def _search(self, resource: Resource, **filters):
@@ -1194,6 +1257,142 @@ class btaConnection:
         positions = self.search_procedureposition(limit=limit, **filters)
         rows = self._filter_decisions(flatten_decisions(positions), voting_method)
         return self._format_rows(rows, return_format)
+
+    # incremental sync
+    def _fetch_updates_raw(self, resource: Resource, since: Union[str, datetime],
+                           until: Optional[Union[str, datetime]], fulltext: bool,
+                           filters: dict) -> Tuple[List[dict], Optional[str]]:
+        if since is None:
+            raise ValueError("since is required, e.g. since='2024-06-01T00:00:00'.")
+        for reserved in ("updated_since", "updated_until", "limit", "return_format"):
+            if reserved in filters:
+                raise ValueError(f"{reserved} cannot be passed as a filter here.")
+        records = self.query(resource=resource, limit=None, updated_since=since,
+                             updated_until=until, fulltext=fulltext, **filters)
+        return records, to_iso8601(since)
+
+    def fetch_updates(self,
+                      resource: Resource,
+                      since: Union[str, datetime],
+                      until: Optional[Union[str, datetime]] = None,
+                      return_format: ReturnFormat = "json",
+                      fulltext: bool = False,
+                      **filters) -> SyncResult:
+        """
+        Retrieves all records that were created or updated since a point in time.
+
+        Uses the 'aktualisiert' timestamp of the API. The returned `checkpoint`
+        is the latest update among the records; pass it as `since` in the next
+        run to only get newer changes. The boundary is inclusive, so records
+        updated exactly at the checkpoint are returned again (use `sync` to
+        avoid these duplicates automatically).
+
+        Parameters
+        ----------
+        resource: str
+            The resource type, e.g. "drucksache" or "vorgang".
+        since: str or datetime
+            Start of the period, e.g. "2024-06-01T00:00:00" (local time Berlin)
+            or "2024-06-01T00:00:00+02:00", or a datetime object.
+        until: str or datetime, optional
+            End of the period.
+        return_format: str, optional
+            "json" (default), "object" or "pandas" for `SyncResult.records`.
+        fulltext: bool, optional
+            Request the fulltext resource ('drucksache' and 'plenarprotokoll' only).
+        **filters:
+            Any filter accepted by `query`, e.g. institution="BT".
+
+        Returns
+        -------
+        SyncResult
+            With `records`, `since` and `checkpoint`.
+        """
+        records, since_str = self._fetch_updates_raw(resource, since, until, fulltext, filters)
+        checkpoint = latest_update(records) or since_str
+        resource_name = cast(Resource, resource + "-text") if fulltext and not resource.endswith("-text") else resource
+        return SyncResult(
+            records=self._format_results(records, return_format, resource_name),
+            since=since_str,
+            checkpoint=checkpoint,
+            ids_at_checkpoint=[str(r.get("id")) for r in records if r.get("aktualisiert") == checkpoint],
+        )
+
+    def sync(self,
+             resource: Resource,
+             state_file: str,
+             since: Optional[Union[str, datetime]] = None,
+             return_format: ReturnFormat = "json",
+             fulltext: bool = False,
+             **filters) -> SyncResult:
+        """
+        Retrieves new or updated records since the last run and remembers the checkpoint.
+
+        The checkpoint is stored in a JSON file per resource and filter
+        combination. Records already returned at the previous checkpoint are
+        not returned again. Ideal for scheduled jobs, e.g. a daily cron job that
+        collects new documents.
+
+        Parameters
+        ----------
+        resource: str
+            The resource type, e.g. "drucksache" or "vorgang".
+        state_file: str
+            Path of the JSON file that stores the checkpoints. It is created if
+            it does not exist and only updated after a successful run.
+        since: str or datetime, optional
+            Start for the first run, when no checkpoint is stored yet. Ignored
+            once a checkpoint exists.
+        return_format: str, optional
+            "json" (default), "object" or "pandas" for `SyncResult.records`.
+        fulltext: bool, optional
+            Request the fulltext resource ('drucksache' and 'plenarprotokoll' only).
+        **filters:
+            Any filter accepted by `query`, e.g. institution="BT".
+
+        Returns
+        -------
+        SyncResult
+
+        Examples
+        --------
+        >>> result = bt.sync("drucksache", state_file="dip_state.json",
+        ...                  since="2024-06-01T00:00:00", institution="BT")
+        >>> print(f"{len(result)} new or updated documents")
+        """
+        key = state_key(resource + ("-text" if fulltext and not resource.endswith("-text") else ""), filters)
+        state = load_state(state_file)
+        entry = state.get(key) or {}
+        start = entry.get("checkpoint") or since
+        if start is None:
+            raise ValueError(
+                "No checkpoint stored for this query yet. Pass since=... for the first run, "
+                "e.g. since='2024-06-01T00:00:00'."
+            )
+
+        records, since_str = self._fetch_updates_raw(resource, start, None, fulltext, filters)
+        # Drop records that were already delivered at the previous checkpoint
+        seen = set(entry.get("ids_at_checkpoint") or [])
+        if entry.get("checkpoint"):
+            records = [r for r in records
+                       if not (str(r.get("id")) in seen and r.get("aktualisiert") == entry["checkpoint"])]
+
+        checkpoint = latest_update(records) or since_str
+        ids_at_checkpoint = [str(r.get("id")) for r in records if r.get("aktualisiert") == checkpoint]
+        if checkpoint == entry.get("checkpoint"):
+            ids_at_checkpoint = sorted(seen | set(ids_at_checkpoint))
+
+        state[key] = {"checkpoint": checkpoint, "ids_at_checkpoint": ids_at_checkpoint,
+                      "last_run": datetime.now().isoformat(timespec="seconds")}
+        save_state(state_file, state)
+
+        resource_name = cast(Resource, resource + "-text") if fulltext and not resource.endswith("-text") else resource
+        return SyncResult(
+            records=self._format_results(records, return_format, resource_name),
+            since=since_str,
+            checkpoint=checkpoint,
+            ids_at_checkpoint=ids_at_checkpoint,
+        )
 
     # vocabularies
     def discover_values(self,

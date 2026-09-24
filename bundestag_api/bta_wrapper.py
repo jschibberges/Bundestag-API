@@ -1261,7 +1261,9 @@ class btaConnection:
     # incremental sync
     def _fetch_updates_raw(self, resource: Resource, since: Union[str, datetime],
                            until: Optional[Union[str, datetime]], fulltext: bool,
-                           filters: dict) -> Tuple[List[dict], Optional[str]]:
+                           filters: dict, return_format: str) -> Tuple[List[dict], Optional[str]]:
+        if return_format not in ("json", "object", "pandas"):
+            raise ValueError("return_format must be 'json', 'object' or 'pandas'.")
         if since is None:
             raise ValueError("since is required, e.g. since='2024-06-01T00:00:00'.")
         for reserved in ("updated_since", "updated_until", "limit", "return_format"):
@@ -1308,7 +1310,7 @@ class btaConnection:
         SyncResult
             With `records`, `since` and `checkpoint`.
         """
-        records, since_str = self._fetch_updates_raw(resource, since, until, fulltext, filters)
+        records, since_str = self._fetch_updates_raw(resource, since, until, fulltext, filters, return_format)
         checkpoint = latest_update(records) or since_str
         resource_name = cast(Resource, resource + "-text") if fulltext and not resource.endswith("-text") else resource
         return SyncResult(
@@ -1370,7 +1372,7 @@ class btaConnection:
                 "e.g. since='2024-06-01T00:00:00'."
             )
 
-        records, since_str = self._fetch_updates_raw(resource, start, None, fulltext, filters)
+        records, since_str = self._fetch_updates_raw(resource, start, None, fulltext, filters, return_format)
         # Drop records that were already delivered at the previous checkpoint
         seen = set(entry.get("ids_at_checkpoint") or [])
         if entry.get("checkpoint"):
@@ -1382,13 +1384,17 @@ class btaConnection:
         if checkpoint == entry.get("checkpoint"):
             ids_at_checkpoint = sorted(seen | set(ids_at_checkpoint))
 
+        # Format before saving: if formatting fails (e.g. pandas missing), the checkpoint
+        # must not advance, otherwise these records would be skipped in the next run.
+        resource_name = cast(Resource, resource + "-text") if fulltext and not resource.endswith("-text") else resource
+        formatted = self._format_results(records, return_format, resource_name)
+
         state[key] = {"checkpoint": checkpoint, "ids_at_checkpoint": ids_at_checkpoint,
                       "last_run": datetime.now().isoformat(timespec="seconds")}
         save_state(state_file, state)
 
-        resource_name = cast(Resource, resource + "-text") if fulltext and not resource.endswith("-text") else resource
         return SyncResult(
-            records=self._format_results(records, return_format, resource_name),
+            records=formatted,
             since=since_str,
             checkpoint=checkpoint,
             ids_at_checkpoint=ids_at_checkpoint,

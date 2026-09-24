@@ -244,3 +244,31 @@ def test_sync_does_not_write_state_on_error(make_conn, tmp_path):
 def test_latest_update_handles_mixed_naive_and_aware():
     assert latest_update([{"aktualisiert": "2024-06-01T10:00:00"},
                           {"aktualisiert": "2030-01-01T00:00:00+00:00"}]) == "2030-01-01T00:00:00+00:00"
+
+
+def test_sync_does_not_advance_checkpoint_when_formatting_fails(make_conn, tmp_path, monkeypatch):
+    state_file = tmp_path / "state.json"
+    docs = _docs(2, {0: "2024-06-02T10:00:00+02:00", 1: "2024-06-03T10:00:00+02:00"})
+    conn = make_conn(docs)
+
+    def no_pandas(*args, **kwargs):
+        raise ImportError("return_format='pandas' requires pandas")
+    monkeypatch.setattr(conn, "_format_results", no_pandas)
+    with pytest.raises(ImportError):
+        conn.sync("drucksache", state_file=str(state_file), since="2024-06-01T00:00:00",
+                  return_format="pandas")
+    assert not state_file.exists()
+
+    # the next run still gets all records
+    monkeypatch.undo()
+    result = conn.sync("drucksache", state_file=str(state_file), since="2024-06-01T00:00:00")
+    assert len(result) == 2
+
+
+@pytest.mark.parametrize("method", ["sync", "fetch_updates"])
+def test_invalid_return_format_rejected_before_request(make_conn, tmp_path, method):
+    conn = make_conn(_docs(1))
+    kwargs = {"state_file": str(tmp_path / "s.json")} if method == "sync" else {}
+    with pytest.raises(ValueError, match="return_format"):
+        getattr(conn, method)("drucksache", since="2024-06-01T00:00:00", return_format="xml", **kwargs)
+    assert conn.session.calls == []

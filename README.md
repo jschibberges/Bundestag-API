@@ -527,6 +527,14 @@ monthly_counts = df.groupby(df['datum'].dt.to_period('M')).size()
 
 Contributions are welcome! Please check the [GitHub repository](https://github.com/jschibberges/Bundestag-API) for current issues and development guidelines.
 
+Run the unit tests with `pytest`. They use sample data and need no network access.
+Before a release, run the smoke test against the live API:
+
+```bash
+python scripts/live_check.py              # add --apikey YOUR_KEY or set BUNDESTAG_API_KEY
+python scripts/live_check.py --skip-periods   # faster
+```
+
 ## License
 
 This project is licensed under the MIT License. See the LICENSE file for details.

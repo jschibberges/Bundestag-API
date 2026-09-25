@@ -219,3 +219,9 @@ def test_download_error_raises(conn):
     conn.session = _Failing([_record()])
     with pytest.raises(requests.HTTPError, match="Could not download"):
         conn.get_speeches(5)
+
+
+def test_missing_extra_metadata_does_not_overwrite_xml_values():
+    parsed = parse_protocol_xml(FIXTURE, extra_metadata={"protocol_id": 5, "document_number": None})
+    assert parsed.metadata["document_number"] == "20/999"
+    assert parsed.speeches[0]["document_number"] == "20/999"

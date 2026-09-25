@@ -227,7 +227,8 @@ def parse_protocol_xml(source: Union[str, bytes, os.PathLike],
 
     metadata = _parse_metadata(root)
     if extra_metadata:
-        metadata.update(extra_metadata)
+        # Missing values must not overwrite what was read from the XML itself
+        metadata.update({k: v for k, v in extra_metadata.items() if v is not None})
     base = dict(metadata)
     base.pop("start_time", None)
     base.pop("end_time", None)

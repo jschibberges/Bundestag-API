@@ -14,6 +14,7 @@ Each check prints OK, WARN (plausibility issue, please look at it) or FAIL.
 The exit code is 1 if any check failed.
 """
 import argparse
+import json
 import os
 import sys
 import traceback
@@ -156,6 +157,11 @@ def check_speeches(bt, ctx):
         problems.append("no chair segments")
     if roles.get("unknown", 0):
         problems.append(f"{roles['unknown']} segments with unknown speaker")
+    unclassified = Counter(c["text"] for c in comments if c["kind"] == "Sonstiges")
+    if unclassified:
+        print("       most common unclassified comment parts:")
+        for text, n in unclassified.most_common(15):
+            print(f"         {n:3}x {text[:110]!r}")
     if other_share > 0.3:
         problems.append(f"{other_share:.0%} of comments not classified")
     report("WARN" if problems else "OK", "Speech parser", "; ".join(problems) or
@@ -168,6 +174,7 @@ def check_decisions(bt, ctx):
     rows = bt.search_decisions(legislative_period=20, process_type="Gesetzgebung", limit=300)
     if not rows:
         report("WARN", "Decisions", "no decisions in 300 procedure positions")
+        diagnose_decisions(bt)
         return
     methods = Counter(r["voting_method"] for r in rows)
     print(f"       voting methods: {dict(methods)}")
@@ -180,6 +187,23 @@ def check_decisions(bt, ctx):
         report("WARN", "Decisions", detail + f", unknown voting methods: {unknown}")
     else:
         report("OK", "Decisions", detail)
+
+
+def diagnose_decisions(bt):
+    """Show where decisions are delivered: list responses vs. single-entity endpoint."""
+    positions = bt.search_procedureposition(legislative_period=20, process_type="Gesetzgebung", limit=300)
+    keys = Counter(k for p in positions for k in p)
+    print(f"       keys in {len(positions)} list results: {dict(keys.most_common())}")
+    names = Counter(p.get("vorgangsposition") for p in positions)
+    print(f"       most common positions: {dict(names.most_common(10))}")
+    candidates = [p for p in positions if "Beratung" in (p.get("vorgangsposition") or "")
+                  or "Durchgang" in (p.get("vorgangsposition") or "")][:3]
+    for p in candidates:
+        detail = bt._request_page(bt.BASE_URL + f"vorgangsposition/{p['id']}", {"format": "json"})
+        in_detail = sorted(set(detail) - set(p))
+        print(f"       position {p['id']} ({p.get('vorgangsposition')}): "
+              f"fields only in single request: {in_detail}; "
+              f"beschlussfassung={json.dumps(detail.get('beschlussfassung'), ensure_ascii=False)[:300]}")
 
 
 @check("discover_values")

@@ -41,6 +41,23 @@ COMMENT_KINDS = (
 _ACTOR_PATTERN = re.compile(
     r"(?:Abg\.|Abgeordneten)\s+(?P<actor>[^\[\]:]+?)\s*\[(?P<faction>[^\]]+)\]"
 )
+# Named interjection without keyword, e.g. "Dr. Max Muster [AfD]: Das ist doch Unsinn!"
+_NAMED_INTERJECTION = re.compile(
+    r"^(?P<actor>[^\[\]:()]+?)\s*\[(?P<faction>[^\]]+)\]\s*:\s*(?P<quote>.*)$"
+)
+_QUOTING_KINDS = ("Zuruf", "Gegenruf", "Zwischenruf")
+
+
+def _comment_kind(part: str) -> str:
+    """Classify a comment part by a keyword in its first two words.
+
+    Covers e.g. "Beifall bei der SPD", "Lebhafter Beifall" and "Zurufe von der AfD".
+    """
+    words = re.split(r"[\s:,]+", part, maxsplit=2)[:2]
+    for word in words:
+        if word in COMMENT_KINDS:
+            return "Zuruf" if word == "Zurufe" else word
+    return "Sonstiges"
 
 
 @dataclass
@@ -153,18 +170,25 @@ def split_comment(text: str) -> List[Dict[str, Optional[str]]]:
     parts = [p.strip() for p in re.split(r"\s+[–—]\s+", body) if p.strip()]
     result = []
     for part in parts:
-        first_word = re.split(r"[\s:,]", part, maxsplit=1)[0]
-        kind = first_word if first_word in COMMENT_KINDS else "Sonstiges"
-        if kind == "Zurufe":
-            kind = "Zuruf"
+        kind = _comment_kind(part)
         actor = actor_faction = quote = None
         match = _ACTOR_PATTERN.search(part)
-        if match:
+        named = _NAMED_INTERJECTION.match(part) if kind == "Sonstiges" else None
+        if named:
+            # A member calling out, recorded as "Name [Faction]: text"
+            kind = "Zuruf"
+            actor = _clean(named.group("actor"))
+            actor_faction = _clean(named.group("faction"))
+            quote = named.group("quote").strip() or None
+        elif match:
             actor = _clean(match.group("actor"))
             actor_faction = _clean(match.group("faction"))
             rest = part[match.end():]
             if rest.lstrip().startswith(":"):
                 quote = rest.lstrip()[1:].strip() or None
+        if quote is None and kind in _QUOTING_KINDS and ":" in part:
+            # e.g. "Zuruf von der AfD: Unsinn!"
+            quote = part.split(":", 1)[1].strip() or None
         result.append({"kind": kind, "text": part, "actor": actor,
                        "actor_faction": actor_faction, "quote": quote})
     return result

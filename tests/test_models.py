@@ -54,3 +54,11 @@ def test_vorgang_approval_is_boolean():
     v = Vorgang({"id": "1", "zustimmungsbeduerftigkeit": ["Ja, laut Gesetzentwurf (Drs 20/1)"]})
     assert v.approvalnecessaryBool is True
     assert Vorgang({"id": "1"}).approvalnecessaryBool is None
+
+
+def test_person_role_without_function():
+    """Live data contains person_roles entries without 'funktion' (despite the spec)."""
+    p = Person({"id": "1", "nachname": "Muster", "vorname": "Anna", "titel": "Anna Muster, MdB, SPD",
+                "person_roles": [{"nachname": "Muster", "vorname": "Anna", "fraktion": "SPD"}]})
+    assert p.roles[0].function is None
+    assert "Muster" in p.roles[0].returnrole()

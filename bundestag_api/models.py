@@ -73,7 +73,7 @@ class Role:
     """This class presents a role in the German parliamentary system."""
 
     def __init__(self, dictionary):
-        self.function = dictionary["funktion"]
+        self.function = dictionary.get("funktion")
         if "wahlperiode_nummer" in dictionary:
             self.legislativeperiod = dictionary.get("wahlperiode_nummer")
         self.nameaddendum = dictionary.get("namenszusatz")
@@ -185,7 +185,7 @@ class Vorgang:
         self.gesta = dictionary.get("gesta")
         self.effectivedate = None
         if dictionary.get("inkrafttreten"):
-            self.effectivedate = dictionary["inkrafttreten"][0]["datum"]
+            self.effectivedate = dictionary["inkrafttreten"][0].get("datum")
         self.kom = dictionary.get("kom")
         self.notification = dictionary.get("mitteilung")
         self.eucouncilnr = dictionary.get("ratsdok")

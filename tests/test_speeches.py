@@ -225,3 +225,17 @@ def test_missing_extra_metadata_does_not_overwrite_xml_values():
     parsed = parse_protocol_xml(FIXTURE, extra_metadata={"protocol_id": 5, "document_number": None})
     assert parsed.metadata["document_number"] == "20/999"
     assert parsed.speeches[0]["document_number"] == "20/999"
+
+
+@pytest.mark.parametrize("text, kind, actor, faction, quote", [
+    ("(Lebhafter Beifall bei der SPD)", "Beifall", None, None, None),
+    ("(Anhaltender Beifall)", "Beifall", None, None, None),
+    ("(Dr. Max Muster [AfD]: Das ist doch Unsinn!)", "Zuruf", "Dr. Max Muster", "AfD", "Das ist doch Unsinn!"),
+    ("(Zuruf von der AfD: Unsinn!)", "Zuruf", None, None, "Unsinn!"),
+    ("(Zurufe von der CDU/CSU)", "Zuruf", None, None, None),
+    ("(Heiterkeit und Beifall bei der SPD)", "Heiterkeit", None, None, None),
+    ("(Eva Test [DIE LINKE] meldet sich zu einer Zwischenfrage)", "Sonstiges", None, None, None),
+])
+def test_comment_classification_variants(text, kind, actor, faction, quote):
+    (part,) = split_comment(text)
+    assert (part["kind"], part["actor"], part["actor_faction"], part["quote"]) == (kind, actor, faction, quote)

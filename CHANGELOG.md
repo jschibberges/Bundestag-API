@@ -68,5 +68,6 @@ All notable changes to this project are documented in this file.
 
 - Package metadata is defined in `pyproject.toml` only; the version lives in
   `bundestag_api/_version.py`.
-- The README was corrected (API key expiry date, German search terms, data examples) and
-  extended with sections on speeches, decisions, filter values, large datasets and sync.
+- The README was rewritten for data scientists, journalists and civic coders: runnable
+  recipes, a glossary of German terms, a table of all filters with the data types they apply
+  to, upgrade notes for 1.4 and notes on the data source and its terms of use.

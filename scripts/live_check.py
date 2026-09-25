@@ -171,39 +171,52 @@ def check_speeches(bt, ctx):
 
 @check("Decisions")
 def check_decisions(bt, ctx):
-    rows = bt.search_decisions(legislative_period=20, process_type="Gesetzgebung", limit=300)
-    if not rows:
-        report("WARN", "Decisions", "no decisions in 300 procedure positions")
-        diagnose_decisions(bt)
+    # A promulgated law must have decisions (at least the Bundestag's adoption)
+    laws = bt.search_procedure(legislative_period=20, process_type="Gesetzgebung",
+                               consultation_status="Verkündet", limit=3)
+    if not laws:
+        report("WARN", "Decisions", "no promulgated law found in legislative period 20")
         return
-    methods = Counter(r["voting_method"] for r in rows)
-    print(f"       voting methods: {dict(methods)}")
-    print(f"       decisions: {dict(Counter(r['decision'] for r in rows).most_common(6))}")
-    unknown = set(methods) - set(voc.VOTING_METHODS) - {None}
-    procedure_id = rows[0]["procedure_id"]
-    per_procedure = bt.get_decisions(procedure_id)
-    detail = f"{len(rows)} decisions, procedure {procedure_id} has {len(per_procedure)}"
-    if unknown or not per_procedure:
-        report("WARN", "Decisions", detail + f", unknown voting methods: {unknown}")
-    else:
-        report("OK", "Decisions", detail)
+    law = laws[0]
+    procedure_id = int(law["id"])
+    print(f"       law {procedure_id}: {law.get('titel', '')[:90]!r}")
 
+    positions = bt.search_procedureposition(processID=procedure_id, limit=None)
+    with_decisions = [p for p in positions if p.get("beschlussfassung")]
+    print(f"       {len(positions)} positions: "
+          + ", ".join(f"{p.get('vorgangsposition')} ({p.get('zuordnung')}, {p.get('dokumentart')})" for p in positions))
+    print(f"       positions with 'beschlussfassung' in search results: {len(with_decisions)}")
 
-def diagnose_decisions(bt):
-    """Show where decisions are delivered: list responses vs. single-entity endpoint."""
-    positions = bt.search_procedureposition(legislative_period=20, process_type="Gesetzgebung", limit=300)
-    keys = Counter(k for p in positions for k in p)
-    print(f"       keys in {len(positions)} list results: {dict(keys.most_common())}")
-    names = Counter(p.get("vorgangsposition") for p in positions)
-    print(f"       most common positions: {dict(names.most_common(10))}")
-    candidates = [p for p in positions if "Beratung" in (p.get("vorgangsposition") or "")
-                  or "Durchgang" in (p.get("vorgangsposition") or "")][:3]
-    for p in candidates:
+    protocol_positions = [p for p in positions if p.get("dokumentart") == "Plenarprotokoll"][:3]
+    detail_has_decisions = 0
+    for p in protocol_positions:
         detail = bt._request_page(bt.BASE_URL + f"vorgangsposition/{p['id']}", {"format": "json"})
-        in_detail = sorted(set(detail) - set(p))
-        print(f"       position {p['id']} ({p.get('vorgangsposition')}): "
-              f"fields only in single request: {in_detail}; "
-              f"beschlussfassung={json.dumps(detail.get('beschlussfassung'), ensure_ascii=False)[:300]}")
+        only_in_detail = sorted(set(detail) - set(p))
+        if detail.get("beschlussfassung"):
+            detail_has_decisions += 1
+        print(f"       single request {p['id']} ({p.get('vorgangsposition')}): "
+              f"extra fields {only_in_detail}, beschlussfassung="
+              f"{json.dumps(detail.get('beschlussfassung'), ensure_ascii=False)[:250]}")
+
+    rows = bt.get_decisions(procedure_id)
+    for r in rows[:5]:
+        print(f"       - {r['date']} {r['institution']} {r['position']}: {r['decision']} "
+              f"({r['decided_document_number']}, {r['voting_method']})")
+
+    scanned = bt.search_decisions(legislative_period=20, process_type="Gesetzgebung",
+                                  document_art="Plenarprotokoll", limit=300)
+    methods = Counter(r["voting_method"] for r in scanned)
+    unknown = set(methods) - set(voc.VOTING_METHODS) - {None}
+    print(f"       search_decisions over 300 plenary positions: {len(scanned)} decisions, "
+          f"voting methods {dict(methods)}")
+
+    detail = (f"get_decisions={len(rows)} for law {procedure_id}, in search results={len(with_decisions)}, "
+              f"in single requests={detail_has_decisions}/{len(protocol_positions)}, "
+              f"search_decisions={len(scanned)}")
+    if rows and scanned and not unknown:
+        report("OK", "Decisions", detail)
+    else:
+        report("WARN", "Decisions", detail + (f", unknown voting methods {unknown}" if unknown else ""))
 
 
 @check("discover_values")

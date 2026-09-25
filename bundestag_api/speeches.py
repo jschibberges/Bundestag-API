@@ -42,8 +42,11 @@ _ACTOR_PATTERN = re.compile(
     r"(?:Abg\.|Abgeordneten)\s+(?P<actor>[^\[\]:]+?)\s*\[(?P<faction>[^\]]+)\]"
 )
 # Named interjection without keyword, e.g. "Dr. Max Muster [AfD]: Das ist doch Unsinn!"
+# or "Max Muster [AfD], an den Abg. Eva Test [SPD] gewandt: Unsinn!"
 _NAMED_INTERJECTION = re.compile(
-    r"^(?P<actor>[^\[\]:()]+?)\s*\[(?P<faction>[^\]]+)\]\s*:\s*(?P<quote>.*)$"
+    r"^(?P<actor>[^\[\]:()]+?)\s*\[(?P<faction>[^\]]+)\]"
+    r"(?:,[^:]*)?"  # optional addition, e.g. ", an den Abg. X [Y] gewandt"
+    r"\s*:\s*(?P<quote>.*)$"
 )
 _QUOTING_KINDS = ("Zuruf", "Gegenruf", "Zwischenruf")
 

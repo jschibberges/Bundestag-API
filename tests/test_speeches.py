@@ -232,6 +232,8 @@ def test_missing_extra_metadata_does_not_overwrite_xml_values():
     ("(Anhaltender Beifall)", "Beifall", None, None, None),
     ("(Dr. Max Muster [AfD]: Das ist doch Unsinn!)", "Zuruf", "Dr. Max Muster", "AfD", "Das ist doch Unsinn!"),
     ("(Zuruf von der AfD: Unsinn!)", "Zuruf", None, None, "Unsinn!"),
+    ("(Max Muster [CDU/CSU], an den Abg. Eva Test [BÜNDNIS 90/DIE GRÜNEN] gewandt: Wir können auch 50 machen!)",
+     "Zuruf", "Max Muster", "CDU/CSU", "Wir können auch 50 machen!"),
     ("(Zurufe von der CDU/CSU)", "Zuruf", None, None, None),
     ("(Heiterkeit und Beifall bei der SPD)", "Heiterkeit", None, None, None),
     ("(Eva Test [DIE LINKE] meldet sich zu einer Zwischenfrage)", "Sonstiges", None, None, None),

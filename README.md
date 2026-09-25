@@ -340,7 +340,8 @@ Good to know:
   pass `"2024-06-01T00:00:00+02:00"` or a timezone-aware `datetime`.
 - "Updated" includes corrections to existing records, so a sync can return old documents
   whose metadata changed.
-- Each combination of resource and filters has its own checkpoint in the state file.
+- Each combination of resource and filters has its own checkpoint in the state file. Several jobs
+  can share one state file, even when running at the same time (the file is locked while saving).
 - The state file is only written after a successful run, so a failed run is simply repeated.
 
 ### Parallel Processing

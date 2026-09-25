@@ -15,7 +15,7 @@ from .utils import to_iso8601, to_date_string
 from .speeches import ParsedProtocol, parse_protocol_xml
 from .decisions import flatten_decisions
 from .vocabulary import DOCUMENT_ARTS, INSTITUTIONS, VOTING_METHODS
-from .sync import SyncResult, latest_update, load_state, save_state, state_key
+from .sync import SyncResult, latest_update, load_state, state_key, update_state_entry
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -1218,7 +1218,7 @@ class btaConnection:
         for i, pid in enumerate(ids):
             if i > 0 and self.delay > 0:
                 time.sleep(self.delay * random.uniform(0.8, 1.2))
-            positions = self.search_procedureposition(processID=pid, limit=1000)
+            positions = self.search_procedureposition(processID=pid, limit=None)
             rows.extend(flatten_decisions(positions))
         rows = self._filter_decisions(rows, voting_method)
         return self._format_rows(rows, return_format)
@@ -1363,8 +1363,7 @@ class btaConnection:
         >>> print(f"{len(result)} new or updated documents")
         """
         key = state_key(resource + ("-text" if fulltext and not resource.endswith("-text") else ""), filters)
-        state = load_state(state_file)
-        entry = state.get(key) or {}
+        entry = load_state(state_file).get(key) or {}
         start = entry.get("checkpoint") or since
         if start is None:
             raise ValueError(
@@ -1389,9 +1388,11 @@ class btaConnection:
         resource_name = cast(Resource, resource + "-text") if fulltext and not resource.endswith("-text") else resource
         formatted = self._format_results(records, return_format, resource_name)
 
-        state[key] = {"checkpoint": checkpoint, "ids_at_checkpoint": ids_at_checkpoint,
-                      "last_run": datetime.now().isoformat(timespec="seconds")}
-        save_state(state_file, state)
+        # Re-reads the file under a lock and only replaces this query's entry,
+        # so parallel runs sharing one state file do not overwrite each other.
+        update_state_entry(state_file, key, {
+            "checkpoint": checkpoint, "ids_at_checkpoint": ids_at_checkpoint,
+            "last_run": datetime.now().isoformat(timespec="seconds")})
 
         return SyncResult(
             records=formatted,

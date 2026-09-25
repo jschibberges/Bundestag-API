@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
@@ -95,3 +97,51 @@ def save_state(path: str, state: Dict[str, Any]) -> None:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
         raise
+
+
+@contextmanager
+def _state_lock(path: str, timeout: float = 30.0, stale_after: float = 120.0):
+    """Cross-platform lock for the state file, based on an exclusively created lock file.
+
+    A lock file older than `stale_after` seconds (left behind by a crashed process)
+    is removed.
+    """
+    lock_path = path + ".lock"
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(lock_path) > stale_after:
+                    os.remove(lock_path)
+                    continue
+            except FileNotFoundError:
+                continue
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Could not lock state file {path} within {timeout:.0f} seconds. "
+                    f"If no other sync is running, delete {lock_path}."
+                ) from None
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        try:
+            os.remove(lock_path)
+        except FileNotFoundError:
+            pass
+
+
+def update_state_entry(path: str, key: str, entry: Dict[str, Any]) -> None:
+    """Store the checkpoint entry of one query without touching the others.
+
+    The file is re-read under a lock right before writing, so parallel sync
+    runs sharing one state file do not overwrite each other's checkpoints.
+    """
+    with _state_lock(path):
+        state = load_state(path)
+        state[key] = entry
+        save_state(path, state)

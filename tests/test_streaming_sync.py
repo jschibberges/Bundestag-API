@@ -276,3 +276,53 @@ def test_invalid_return_format_rejected_before_request(make_conn, tmp_path, meth
     with pytest.raises(ValueError, match="return_format"):
         getattr(conn, method)("drucksache", since="2024-06-01T00:00:00", return_format="xml", **kwargs)
     assert conn.session.calls == []
+
+
+def test_parallel_sync_runs_do_not_overwrite_each_other(make_conn, tmp_path, monkeypatch):
+    """Run B saves while run A is between reading and saving; A must keep B's entry."""
+    import bundestag_api.bta_wrapper as wrapper
+    state_file = str(tmp_path / "state.json")
+    conn_a = make_conn(_docs(1, {0: "2024-06-02T10:00:00+02:00"}))
+    conn_b = make_conn(_docs(1, {0: "2024-06-05T10:00:00+02:00"}))
+
+    original_raw = btaConnection._fetch_updates_raw
+
+    def fetch_then_let_b_run(self, *args, **kwargs):
+        result = original_raw(self, *args, **kwargs)
+        if self is conn_a:
+            conn_b.sync("vorgang", state_file=state_file, since="2024-06-01T00:00:00")
+        return result
+    monkeypatch.setattr(wrapper.btaConnection, "_fetch_updates_raw", fetch_then_let_b_run)
+
+    conn_a.sync("drucksache", state_file=state_file, since="2024-06-01T00:00:00")
+    state = json.loads(open(state_file, encoding="utf-8").read())
+    checkpoints = sorted(e["checkpoint"] for e in state.values())
+    assert checkpoints == ["2024-06-02T10:00:00+02:00", "2024-06-05T10:00:00+02:00"]
+
+
+def test_state_lock_removes_stale_lock_and_times_out(tmp_path):
+    import os
+    import time
+    from bundestag_api.sync import _state_lock, update_state_entry
+    path = str(tmp_path / "state.json")
+    lock = path + ".lock"
+
+    open(lock, "w").close()
+    old = time.time() - 3600
+    os.utime(lock, (old, old))
+    update_state_entry(path, "k", {"checkpoint": "x"})  # stale lock is removed
+    assert not os.path.exists(lock)
+
+    open(lock, "w").close()  # fresh lock held by "another process"
+    with pytest.raises(TimeoutError, match="delete"):
+        with _state_lock(path, timeout=0.2):
+            pass
+    os.remove(lock)
+
+
+def test_get_decisions_fetches_all_positions(tmp_path):
+    from tests.test_decisions import _position
+    positions = [_position(i, [{"beschlusstenor": "Annahme"}]) for i in range(1205)]
+    c = btaConnection(apikey="testapikey0123456789")
+    c.session = _PagedSession(positions, page_size=100)
+    assert len(c.get_decisions(300001)) == 1205

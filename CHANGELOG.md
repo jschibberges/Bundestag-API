@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Procedure timeline:** `procedure_timeline()` returns all steps of a procedure with lead
+  committee, committees and decisions, plus signing ("Ausfertigung"), promulgation
+  ("Verkündung") and entry into force ("Inkrafttreten"), one row per event and sorted by date.
+  `only_important=True` keeps the steps the Bundestag marks as important.
+  `build_timeline()` builds the same from data you already have.
+
 ## [1.4.0] - 2026-09-25
 
 ### Breaking changes

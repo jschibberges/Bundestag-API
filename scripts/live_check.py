@@ -179,6 +179,7 @@ def check_decisions(bt, ctx):
         return
     law = laws[0]
     procedure_id = int(law["id"])
+    ctx["law_id"] = procedure_id
     print(f"       law {procedure_id}: {law.get('titel', '')[:90]!r}")
 
     positions = bt.search_procedureposition(processID=procedure_id, limit=None)
@@ -219,6 +220,46 @@ def check_decisions(bt, ctx):
         report("WARN", "Decisions", detail + (f", unknown voting methods {unknown}" if unknown else ""))
 
 
+@check("Procedure timeline")
+def check_timeline(bt, ctx):
+    procedure_id = ctx.get("law_id")
+    if procedure_id is None:
+        laws = bt.search_procedure(legislative_period=20, process_type="Gesetzgebung",
+                                   consultation_status="Verkündet", limit=1)
+        procedure_id = int(laws[0]["id"])
+    rows = bt.procedure_timeline(procedure_id)
+    for r in rows:
+        print(f"       {r['date']} {r['event_type']:16} {r['institution'] or '':2} {r['event']}"
+              + (f" | lead: {r['lead_committee']}" if r["lead_committee"] else "")
+              + (f" | {r['decisions']}" if r["decisions"] else "")
+              + (f" | {r['document_number']}" if r["event_type"] == "promulgation" else "")
+              + (f" | {r['details']}" if r["event_type"] == "entry_into_force" and r["details"] else ""))
+
+    # Are promulgation data part of search results, or only of the single-entity endpoint?
+    in_search = bt.get_procedure(procedure_id)[0]
+    detail = bt._request_page(bt.BASE_URL + f"vorgang/{procedure_id}", {"format": "json"})
+    print(f"       fields only in single request /vorgang/{procedure_id}: {sorted(set(detail) - set(in_search))}")
+    print(f"       verkuendung in search: {bool(in_search.get('verkuendung'))}, in single request: "
+          f"{bool(detail.get('verkuendung'))}; inkrafttreten in search: {bool(in_search.get('inkrafttreten'))}, "
+          f"in single request: {bool(detail.get('inkrafttreten'))}")
+
+    types = Counter(r["event_type"] for r in rows)
+    dates = [r["date"] for r in rows if r["date"]]
+    problems = []
+    if not types.get("step"):
+        problems.append("no steps")
+    if not types.get("promulgation"):
+        problems.append("no promulgation for a promulgated law")
+    if not types.get("entry_into_force"):
+        problems.append("no entry into force")
+    if dates != sorted(dates):
+        problems.append("not sorted by date")
+    if not any(r["lead_committee"] for r in rows):
+        problems.append("no committee referral")
+    report("WARN" if problems else "OK", "Procedure timeline",
+           "; ".join(problems) or f"{len(rows)} events: {dict(types)}")
+
+
 @check("discover_values")
 def check_vocabulary(bt, ctx):
     for resource, field in [("vorgang", "sachgebiet"), ("drucksache", "drucksachetyp"),
@@ -250,7 +291,7 @@ def check_periods(bt, ctx):
 
 
 CHECKS = [check_auth, check_institution, check_models, check_pagination, check_count,
-          check_updates, check_speeches, check_decisions, check_vocabulary, check_periods]
+          check_updates, check_speeches, check_decisions, check_timeline, check_vocabulary, check_periods]
 
 
 def run_checks(bt, skip_periods=False):

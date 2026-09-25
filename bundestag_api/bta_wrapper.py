@@ -14,6 +14,7 @@ from .models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, P
 from .utils import to_iso8601, to_date_string
 from .speeches import ParsedProtocol, parse_protocol_xml
 from .decisions import flatten_decisions
+from .timeline import build_timeline
 from .vocabulary import DOCUMENT_ARTS, INSTITUTIONS, VOTING_METHODS
 from .sync import SyncResult, latest_update, load_state, state_key, update_state_entry
 
@@ -1262,6 +1263,54 @@ class btaConnection:
         filters.setdefault("document_art", "Plenarprotokoll")
         positions = self.search_procedureposition(limit=limit, **filters)
         rows = self._filter_decisions(flatten_decisions(positions), voting_method)
+        return self._format_rows(rows, return_format)
+
+    # procedure timeline
+    def procedure_timeline(self,
+                           procedure_id: Union[int, List[int]],
+                           only_important: bool = False,
+                           return_format: Literal["json", "pandas"] = "json") -> Union[List[dict], pd.DataFrame]:
+        """
+        Returns the timeline of one or more procedures, one row per event.
+
+        Combines all procedure steps ('vorgangsposition') with committee
+        referrals and decisions, and adds signing ("Ausfertigung"),
+        promulgation ("Verkündung") and entry into force ("Inkrafttreten")
+        from the procedure itself. Rows are sorted by date.
+
+        Parameters
+        ----------
+        procedure_id: int or list of int
+            The DIP ID or IDs of the procedure(s) ('vorgang').
+        only_important: bool, optional
+            Only steps the Bundestag marks as important for the course of the
+            procedure (e.g. readings, committee report, Bundesrat decisions),
+            plus signing, promulgation and entry into force. Defaults to False.
+        return_format: str, optional
+            "json" (list of dicts, default) or "pandas" (DataFrame).
+
+        Returns
+        -------
+        Union[List[dict], pd.DataFrame]
+            Columns: procedure_id, procedure_title, procedure_status, date,
+            event_type ("step", "signing", "promulgation", "entry_into_force"),
+            event (e.g. "2. Beratung"), institution, important, position_id,
+            originator, document_type, document_number, protocol_id, pdf_url,
+            lead_committee, committees, decisions, decided_document_numbers,
+            voting_methods, details. Multiple values are joined with "; ".
+        """
+        if return_format not in ("json", "pandas"):
+            raise ValueError("return_format must be 'json' or 'pandas' for procedure_timeline.")
+        ids = self._validate_int_list_param(procedure_id, "procedure_id") or []
+        rows: List[dict] = []
+        for i, pid in enumerate(ids):
+            if i > 0 and self.delay > 0:
+                time.sleep(self.delay * random.uniform(0.8, 1.2))
+            procedures = self.get_procedure(pid)
+            if not procedures:
+                raise ValueError(f"Procedure with ID {pid} not found.")
+            positions = self.search_procedureposition(processID=pid, limit=None)
+            rows.extend(build_timeline(procedures[0], positions, only_important=only_important))
         return self._format_rows(rows, return_format)
 
     # incremental sync

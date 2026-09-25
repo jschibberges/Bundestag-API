@@ -125,9 +125,13 @@ laws = bt.search_procedure(title="Medizinforschungsgesetz", process_type="Gesetz
 law = laws[0]
 print(law["id"], law["titel"], law.get("beratungsstand"))
 
-# All steps, in order
-steps = bt.search_procedureposition(processID=int(law["id"]), limit=None, return_format="pandas")
-steps[["datum", "zuordnung", "vorgangsposition", "dokumentart"]].sort_values("datum")
+# Timeline: every step with committees and decisions, plus signing,
+# promulgation and entry into force, sorted by date
+timeline = bt.procedure_timeline(int(law["id"]), return_format="pandas")
+timeline[["date", "institution", "event", "lead_committee", "decisions"]]
+
+# Only the steps that matter for the course of the procedure
+bt.procedure_timeline(int(law["id"]), only_important=True, return_format="pandas")
 
 # All decisions, from the Bundesrat's opinion to the final vote
 decisions = bt.get_decisions(int(law["id"]), return_format="pandas")
@@ -456,6 +460,11 @@ All functions have docstrings with every parameter: `help(bt.search_document)`.
 - `search_speeches(max_protocols=10, level="speech", speaker=None, faction=None, **filters)`
 - `parse_protocol(protocol)`: speeches, segments and comments of one protocol (ID or search result)
 - `bundestag_api.parse_protocol_xml(path_or_xml)`: parse a local XML file
+
+**Procedures**
+- `procedure_timeline(procedure_id, only_important=False)`: all steps, committees, decisions,
+  signing, promulgation and entry into force, one row per event
+- `bundestag_api.build_timeline(procedure, positions)`: the same from data you already have
 
 **Decisions**
 - `get_decisions(procedure_id, voting_method=None)`

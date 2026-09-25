@@ -11,3 +11,4 @@ from .decisions import flatten_decisions
 from . import vocabulary
 from .vocabulary import VOTING_METHODS, legislative_period_for, legislative_period_dates
 from .sync import SyncResult
+from .timeline import build_timeline

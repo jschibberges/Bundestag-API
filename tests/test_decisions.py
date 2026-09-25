@@ -142,6 +142,13 @@ def test_search_decisions_passes_filters(conn):
     assert len(rows) == 3
 
 
+def test_search_decisions_scans_plenary_positions_by_default(conn):
+    conn.search_decisions(legislative_period=20)
+    assert conn.session.calls[0][1]["f.dokumentart"] == "Plenarprotokoll"
+    conn.search_decisions(legislative_period=20, document_art=None)
+    assert conn.session.calls[-1][1]["f.dokumentart"] is None
+
+
 def test_decision_argument_validation(conn):
     with pytest.raises(ValueError, match="voting_method"):
         conn.get_decisions(1, voting_method="Handzeichen")

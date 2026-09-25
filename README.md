@@ -178,10 +178,13 @@ votes = bt.search_decisions(
     date_end="2024-06-30",
     institution="BT",
     voting_method="Namentliche Abstimmung",
-    limit=500,                 # number of procedure steps to scan
+    limit=500,                 # number of plenary procedure steps to scan
     return_format="pandas",
 )
 ```
+
+`search_decisions` only scans procedure steps linked to a plenary protocol, because that is
+where decisions are recorded. Pass `document_art=None` to scan all steps.
 
 Each row contains the procedure (`procedure_id`, `procedure_title`, `procedure_type`), the step
 (`position`, e.g. "2. Beratung", `institution`, `date`), the decision (`decision`, `decided_document_number`,
@@ -189,7 +192,9 @@ Each row contains the procedure (`procedure_id`, `procedure_title`, `procedure_t
 (`document_number`, `page`, `pdf_url`). For decisions taken in a plenary session, `protocol_id` links
 to the protocol, so you can fetch the debate: `bt.get_speeches(row["protocol_id"])`.
 
-⚠️ **Read decisions carefully.** `decision` refers to the document in `decided_document_number`.
+⚠️ **Read decisions carefully.** `decision` refers to the document(s) in `decided_document_number`
+(several numbers are separated by commas, e.g. `"20/11561, 20/12149"` for a bill and the committee
+recommendation).
 "Annahme der Beschlussempfehlung" (adoption of the committee recommendation) can mean that the
 original motion was *rejected*, if the committee recommended rejection. Check that document before
 reporting an outcome. The API does not contain how individual members voted.

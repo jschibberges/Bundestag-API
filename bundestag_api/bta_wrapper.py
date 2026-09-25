@@ -1235,11 +1235,16 @@ class btaConnection:
         (e.g. `date_start`, `date_end`, `legislative_period`, `process_type`,
         `institution`, `title`). Positions without a decision are skipped.
 
+        Decisions are recorded in plenary protocols, so only positions linked to a
+        plenary protocol are scanned by default (`document_art="Plenarprotokoll"`).
+        Otherwise `limit` would mostly be used up by drafts and other documents
+        without decisions. Pass `document_art=None` to scan all positions.
+
         Parameters
         ----------
         limit: int, optional
             Maximum number of procedure positions to scan (not decisions).
-            Defaults to 100.
+            Defaults to 100. Use None to scan all matching positions.
         return_format: str, optional
             "json" (list of dicts, default) or "pandas" (DataFrame).
         voting_method: str, optional
@@ -1254,6 +1259,7 @@ class btaConnection:
         self._validate_decision_args(return_format, voting_method)
         if "return_format" in filters or "fulltext" in filters:
             raise ValueError("return_format and fulltext cannot be passed as filters.")
+        filters.setdefault("document_art", "Plenarprotokoll")
         positions = self.search_procedureposition(limit=limit, **filters)
         rows = self._filter_decisions(flatten_decisions(positions), voting_method)
         return self._format_rows(rows, return_format)

@@ -4,14 +4,15 @@ import json
 from typing import cast
 
 from .bta_wrapper import Resource, btaConnection
-from .utils import parse_args_to_dict
+from .utils import parse_args_to_dict, parse_bool
 
 
 def main():
     """Entry point for the command-line interface."""
     # very small demo CLI
     if len(sys.argv) < 3:
-        print("Usage: python -m bundestag_api <resource> <search|get> key=val ... [output_file=path/to/file.json]")
+        print("Usage: python -m bundestag_api <resource> <search|get> key=val ... [output_file=path/to/file.json]\n"
+              "Repeat a key to pass several values, e.g. title=Klima title=Energie")
         sys.exit(1)
 
     try:
@@ -19,7 +20,8 @@ def main():
         action = sys.argv[2]
         kwargs = parse_args_to_dict(sys.argv[3:])
     except IndexError:
-        print("Usage: python -m bundestag_api <resource> <search|get> key=val ... [output_file=path/to/file.json]")
+        print("Usage: python -m bundestag_api <resource> <search|get> key=val ... [output_file=path/to/file.json]\n"
+              "Repeat a key to pass several values, e.g. title=Klima title=Energie")
         sys.exit(1)
 
     # Pop the output file argument so it's not passed to the API
@@ -36,10 +38,21 @@ def main():
     for key in numeric_args:
         if key in kwargs:
             try:
-                kwargs[key] = int(kwargs[key])
+                if isinstance(kwargs[key], list):
+                    kwargs[key] = [int(v) for v in kwargs[key]]
+                else:
+                    kwargs[key] = int(kwargs[key])
             except (ValueError, TypeError):
                 print(f"Error: Argument '{key}' must be an integer. Got '{kwargs[key]}'.")
                 sys.exit(1)
+
+    # Boolean arguments arrive as strings ("False" would otherwise be truthy).
+    if "fulltext" in kwargs:
+        try:
+            kwargs["fulltext"] = parse_bool(kwargs["fulltext"])
+        except ValueError as e:
+            print(f"Error: Argument 'fulltext': {e}")
+            sys.exit(1)
 
     conn = btaConnection(apikey=kwargs.pop("apikey", None))
 

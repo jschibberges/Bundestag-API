@@ -20,6 +20,8 @@ from typing import Iterable, List, Optional
 import pytest
 import requests
 
+from bundestag_api import __version__
+
 # ---- Auto-block all real network in tests (fail fast) ----
 @pytest.fixture(autouse=True)
 def _no_real_network(monkeypatch):
@@ -71,13 +73,14 @@ class FakeSession:
         self.last_url = None
         self.last_params = None
         self.last_timeout = None
+        self.last_headers = None
         self.headers = {}
 
     def mount(self, *args, **kwargs):
         # bta_wrapper may call session.mount; we accept & ignore.
         return None
 
-    def get(self, url, params=None, timeout=None):
+    def get(self, url, params=None, timeout=None, headers=None):
         if self.call_count >= self.max_calls:
             # Prevent infinite loops in tests
             raise RuntimeError(f"Too many API calls in test ({self.call_count})")
@@ -85,6 +88,7 @@ class FakeSession:
         self.last_url = url
         self.last_params = params or {}
         self.last_timeout = timeout
+        self.last_headers = headers or {}
         # pick response (support multiple sequential responses)
         idx = min(self.call_count, len(self.responses) - 1)
         resp = self.responses[idx]
@@ -178,7 +182,7 @@ def test_query_coerces_updated_since_datetime_if_supported(conn):
 
 
 def test_list_params_are_left_as_lists_for_requests_expansion(conn):
-    conn.query(resource="drucksache", title=["Haushalt", "Bund"], descriptor=["Finanzen", "Steuern"], limit=5)
+    conn.query(resource="vorgang", title=["Haushalt", "Bund"], descriptor=["Finanzen", "Steuern"], limit=5)
     assert conn.session.last_params.get("f.titel") == ["Haushalt", "Bund"]
     assert conn.session.last_params.get("f.deskriptor") == ["Finanzen", "Steuern"]
 
@@ -234,8 +238,14 @@ def test_mutually_exclusive_ids_raise_value_error(conn):
         ("plenaryprotocolID", 1, "vorgang", "drucksache", "plenaryprotocolID"),
         ("processID", 1, "vorgangsposition", "vorgang", "processID"),
         ("activityID", 1, "vorgangsposition", "vorgang", "activityID"),
-        ("title", "Test", "drucksache", "person", "Title"),
-        ("drucksache_type", "Antrag", "vorgang", "person", "Drucksache type"),
+        ("title", "Test", "drucksache", "person", "title"),
+        ("drucksache_type", "Antrag", "vorgang", "person", "drucksache_type"),
+        ("institution", "BR", "drucksache", "vorgang", "institution"),
+        ("institution", "BR", "aktivitaet", "person", "institution"),
+        ("descriptor", "Klimaschutz", "vorgang", "drucksache", "descriptor"),
+        ("sachgebiet", "Innere Sicherheit", "aktivitaet", "plenarprotokoll", "sachgebiet"),
+        ("process_type", "Gesetzgebung", "plenarprotokoll", "person", "process_type"),
+        ("process_type_notation", 100, "aktivitaet", "person", "process_type_notation"),
     ],
 )
 def test_resource_specific_parameter_validation(conn, param, value, valid_resource, invalid_resource, match_str):
@@ -462,7 +472,7 @@ def test_validate_resource_specific_params_uses_lookup_table(conn):
 def test_validate_and_normalize_params_normalizes_lists(conn):
     """_validate_and_normalize_params should normalize string/int parameters to lists."""
     params = conn._validate_and_normalize_params(
-        resource="drucksache",
+        resource="vorgang",
         fid=123,  # Single int
         descriptor="Politik",  # Single string
         title=["Haushalt", "Budget"]  # Already a list
@@ -499,7 +509,7 @@ def test_build_api_payload_creates_correct_structure(conn):
 
     payload = conn._build_api_payload(validated_params)
 
-    assert payload["apikey"] == conn.apikey
+    assert "apikey" not in payload
     assert payload["format"] == "json"
     assert payload["f.id"] == [123, 456]
     assert payload["f.datum.start"] == "2024-01-01"
@@ -917,7 +927,7 @@ def test_delay_invalid_raises():
 def test_session_headers():
     from bundestag_api.bta_wrapper import btaConnection
     c = btaConnection(apikey="testapikey0123456789")
-    assert c.session.headers.get("User-Agent") == "bundestag_api/1.0"
+    assert c.session.headers.get("User-Agent") == f"bundestag_api/{__version__}"
     assert c.session.headers.get("Accept") == "application/json"
 
 
@@ -1026,7 +1036,7 @@ def test_custom_session_gets_headers():
     from bundestag_api.bta_wrapper import btaConnection
     real_session = requests.Session()
     btaConnection(apikey="testapikey0123456789", session=real_session)
-    assert real_session.headers.get("User-Agent") == "bundestag_api/1.0"
+    assert real_session.headers.get("User-Agent") == f"bundestag_api/{__version__}"
     assert real_session.headers.get("Accept") == "application/json"
     assert real_session.headers.get("Accept-Language") == "de-DE,de;q=0.9,en;q=0.8"
 
@@ -1035,3 +1045,100 @@ def test_custom_session_invalid_raises():
     from bundestag_api.bta_wrapper import btaConnection
     with pytest.raises(ValueError, match="session must be a requests.Session"):
         btaConnection(apikey="testapikey0123456789", session="not_a_session")
+
+
+# ---- Regression tests for review findings ----
+
+def test_institution_is_sent_to_api(conn):
+    conn.query(resource="drucksache", institution="BR", limit=1)
+    assert conn.session.last_params.get("f.zuordnung") == "BR"
+
+
+@pytest.mark.parametrize("resource", ["plenarprotokoll", "aktivitaet"])
+def test_process_type_filters_are_sent_for_all_supporting_resources(conn, resource):
+    conn.query(resource=resource, process_type="Gesetzgebung", process_type_notation=100, limit=1)
+    assert conn.session.last_params.get("f.vorgangstyp") == ["Gesetzgebung"]
+    assert conn.session.last_params.get("f.vorgangstyp_notation") == [100]
+
+
+def test_drucksache_type_is_allowed_for_activities(conn):
+    conn.query(resource="aktivitaet", drucksache_type="Kleine Anfrage", limit=1)
+    assert conn.session.last_params.get("f.drucksachetyp") == "Kleine Anfrage"
+
+
+def test_fulltext_resources_share_filter_rules(conn):
+    conn.query(resource="drucksache", fulltext=True, institution="BT", title="Klima", limit=1)
+    assert conn.session.last_params.get("f.zuordnung") == "BT"
+    with pytest.raises(ValueError, match="descriptor"):
+        conn.query(resource="plenarprotokoll", fulltext=True, descriptor="Klimaschutz", limit=1)
+
+
+def test_supported_filters_cover_every_resource():
+    from bundestag_api.bta_wrapper import SUPPORTED_FILTERS, FILTER_PARAMS, Resource
+    assert set(SUPPORTED_FILTERS) == set(Resource.__args__)
+    all_supported = set().union(*SUPPORTED_FILTERS.values())
+    # every filter the wrapper can send must be accepted by at least one endpoint
+    assert set(FILTER_PARAMS.values()) <= all_supported
+
+
+def test_apikey_sent_as_header_not_in_url(conn):
+    conn.query(resource="drucksache", limit=1)
+    assert "apikey" not in conn.session.last_params
+    assert conn.session.last_headers.get("Authorization") == f"ApiKey {conn.apikey}"
+
+
+def test_repr_and_str_mask_apikey(conn):
+    assert conn.apikey not in repr(conn)
+    assert conn.apikey not in str(conn)
+
+
+def test_xml_return_format_is_rejected(conn):
+    with pytest.raises(ValueError, match="Not a correct format"):
+        conn.query(resource="drucksache", return_format="xml")
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("2024-01-31", "2024-01-31"),
+    (datetime(2024, 1, 31, 12, 0), "2024-01-31"),
+])
+def test_date_filters_are_normalized(conn, value, expected):
+    conn.query(resource="drucksache", date_start=value, date_end=value, limit=1)
+    assert conn.session.last_params.get("f.datum.start") == expected
+    assert conn.session.last_params.get("f.datum.end") == expected
+
+
+def test_date_objects_are_accepted(conn):
+    from datetime import date
+    conn.query(resource="drucksache", date_start=date(2024, 1, 31), limit=1)
+    assert conn.session.last_params.get("f.datum.start") == "2024-01-31"
+
+
+@pytest.mark.parametrize("bad", ["31.01.2024", "2024-1-31T00:00", 20240131])
+def test_invalid_date_filters_raise(conn, bad):
+    with pytest.raises(ValueError, match="date_start"):
+        conn.query(resource="drucksache", date_start=bad, limit=1)
+
+
+def test_package_imports_without_pandas():
+    import subprocess, sys, textwrap
+    code = textwrap.dedent("""
+        import builtins
+        real_import = builtins.__import__
+        def fake_import(name, *args, **kwargs):
+            if name == "pandas" or name.startswith("pandas."):
+                raise ImportError("No module named 'pandas'")
+            return real_import(name, *args, **kwargs)
+        builtins.__import__ = fake_import
+        import bundestag_api
+        conn = bundestag_api.btaConnection(apikey="testapikey0123456789")
+        try:
+            conn._format_results([], "pandas", "drucksache")
+        except ImportError as e:
+            assert "pip install" in str(e)
+        else:
+            raise AssertionError("expected ImportError")
+    """)
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

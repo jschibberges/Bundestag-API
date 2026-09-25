@@ -1,24 +1,111 @@
 # -*- coding: utf-8 -*-
-from datetime import datetime
+from __future__ import annotations
+
+from datetime import date, datetime
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 import logging
 import time
 import random
-import pandas as pd
-from typing import Any, Dict, Iterable, List, Optional, Union, Literal, cast
+from typing import TYPE_CHECKING, Any, Dict, Iterable, Iterator, List, Optional, Tuple, Union, Literal, cast
+from ._version import __version__
 from .models import Person, Aktivitaet, Vorgang, Vorgangsposition, Drucksache, Plenarprotokoll
-from .utils import to_iso8601
+from .utils import to_iso8601, to_date_string
+from .speeches import ParsedProtocol, parse_protocol_xml
+from .decisions import flatten_decisions
+from .vocabulary import DOCUMENT_ARTS, INSTITUTIONS, VOTING_METHODS
+from .sync import SyncResult, latest_update, load_state, state_key, update_state_entry
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 logger = logging.getLogger("bundestag_api")
 logger.addHandler(logging.NullHandler())
 
 ReturnFormat = Literal["json", "object", "pandas"]
+SpeechLevel = Literal["speech", "segment", "comment"]
 Institution = Literal["BT", "BR", "BV", "EK"]
 Resource = Literal["aktivitaet", "drucksache", "drucksache-text", "person", 
                    "plenarprotokoll", "plenarprotokoll-text", "vorgang", 
                    "vorgangsposition"]
+
+# Maps the wrapper's parameter names to the DIP API filter names.
+FILTER_PARAMS = {
+    "fid": "f.id",
+    "date_start": "f.datum.start",
+    "date_end": "f.datum.end",
+    "updated_since": "f.aktualisiert.start",
+    "updated_until": "f.aktualisiert.end",
+    "drucksacheID": "f.drucksache",
+    "plenaryprotocolID": "f.plenarprotokoll",
+    "processID": "f.vorgang",
+    "institution": "f.zuordnung",
+    "descriptor": "f.deskriptor",
+    "sachgebiet": "f.sachgebiet",
+    "drucksache_type": "f.drucksachetyp",
+    "process_type": "f.vorgangstyp",
+    "process_type_notation": "f.vorgangstyp_notation",
+    "title": "f.titel",
+    "activityID": "f.aktivitaet",
+    "legislative_period": "f.wahlperiode",
+    "person_name": "f.person",
+    "personID": "f.person_id",
+    "document_number": "f.dokumentnummer",
+    "document_art": "f.dokumentart",
+    "question_number": "f.frage_nummer",
+    "gesta_id": "f.gesta",
+    "procedure_positionID": "f.vorgangsposition_id",
+    "consultation_status": "f.beratungsstand",
+    "publication_reference": "f.verkuendung_fundstelle",
+    "initiative": "f.initiative",
+    "lead_department": "f.ressort_fdf",
+    "originator": "f.urheber",
+}
+
+# Filters accepted by each endpoint, taken from the DIP OpenAPI specification (v1.5).
+_COMMON_FILTERS = {"f.id", "f.datum.start", "f.datum.end", "f.aktualisiert.start",
+                   "f.aktualisiert.end", "f.wahlperiode"}
+_DRUCKSACHE_FILTERS = _COMMON_FILTERS | {
+    "f.dokumentnummer", "f.drucksachetyp", "f.ressort_fdf", "f.titel", "f.urheber",
+    "f.vorgangstyp", "f.vorgangstyp_notation", "f.zuordnung"}
+_PLENARPROTOKOLL_FILTERS = _COMMON_FILTERS | {
+    "f.dokumentnummer", "f.vorgangstyp", "f.vorgangstyp_notation", "f.zuordnung"}
+SUPPORTED_FILTERS = {
+    "vorgang": _COMMON_FILTERS | {
+        "f.beratungsstand", "f.deskriptor", "f.dokumentart", "f.dokumentnummer",
+        "f.drucksache", "f.drucksachetyp", "f.frage_nummer", "f.gesta", "f.initiative",
+        "f.kom", "f.plenarprotokoll", "f.ratsdok", "f.ressort_fdf", "f.sachgebiet",
+        "f.titel", "f.urheber", "f.verkuendung_fundstelle", "f.vorgangstyp",
+        "f.vorgangstyp_notation"},
+    "vorgangsposition": _COMMON_FILTERS | {
+        "f.aktivitaet", "f.dokumentart", "f.dokumentnummer", "f.drucksache",
+        "f.drucksachetyp", "f.frage_nummer", "f.kom", "f.plenarprotokoll", "f.ratsdok",
+        "f.ressort_fdf", "f.titel", "f.urheber", "f.vorgang", "f.vorgangstyp",
+        "f.vorgangstyp_notation", "f.zuordnung"},
+    "drucksache": _DRUCKSACHE_FILTERS,
+    "drucksache-text": _DRUCKSACHE_FILTERS,
+    "plenarprotokoll": _PLENARPROTOKOLL_FILTERS,
+    "plenarprotokoll-text": _PLENARPROTOKOLL_FILTERS,
+    "aktivitaet": _COMMON_FILTERS | {
+        "f.deskriptor", "f.dokumentart", "f.dokumentnummer", "f.drucksache",
+        "f.drucksachetyp", "f.frage_nummer", "f.kom", "f.person", "f.person_id",
+        "f.plenarprotokoll", "f.ratsdok", "f.sachgebiet", "f.urheber",
+        "f.vorgangsposition_id", "f.vorgangstyp", "f.vorgangstyp_notation", "f.zuordnung"},
+    "person": _COMMON_FILTERS | {"f.person"},
+}
+
+MODEL_MAP = {
+    "aktivitaet": Aktivitaet,
+    "drucksache": Drucksache,
+    "drucksache-text": Drucksache,
+    "person": Person,
+    "plenarprotokoll": Plenarprotokoll,
+    "plenarprotokoll-text": Plenarprotokoll,
+    "vorgang": Vorgang,
+    "vorgangsposition": Vorgangsposition,
+}
+
 
 class btaConnection:
     """This class handles the API authentication and provides search functionality
@@ -91,16 +178,19 @@ class btaConnection:
             self.session = self._build_session()
 
 
+    def _masked_apikey(self) -> str:
+        return f"{self.apikey[:4]}...{self.apikey[-2:]}"
+
     def __str__(self):
-        return "API key: "+str(self.apikey)
+        return "API key: " + self._masked_apikey()
 
     def __repr__(self):
-        return "API key: "+str(self.apikey)
+        return f"btaConnection(apikey='{self._masked_apikey()}')"
 
     def _apply_session_headers(self, s: requests.Session) -> None:
         """Apply the standard request headers to a session."""
         s.headers.update({
-            'User-Agent': 'bundestag_api/1.0',
+            'User-Agent': f'bundestag_api/{__version__}',
             'Accept': 'application/json',
             'Accept-Encoding': 'gzip, deflate',
             'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
@@ -154,26 +244,25 @@ class btaConnection:
                 raise ValueError(f"All items in {param_name} must be convertible to integers.") from e
         return param_value
 
-    def _validate_basic_params(self, resource: Resource, return_format: str, limit: int,
+    def _validate_basic_params(self, resource: Resource, return_format: str, limit: Optional[int],
                               institution: Optional[str], fulltext: bool) -> Resource:
         """Validate basic query parameters and adjust resource for fulltext if needed."""
-        INSTITUTIONS = ["BT", "BR", "BV", "EK"]
-
         # Validate resource
         if resource not in Resource.__args__:
             raise ValueError("No or wrong resource")
 
         # Validate return format
-        if return_format not in ["json", "xml", "object", "pandas"]:
+        if return_format not in ["json", "object", "pandas"]:
             raise ValueError("return_format: Not a correct format!")
 
         # Validate institution
         if institution is not None and institution not in INSTITUTIONS:
-            raise ValueError("Unknown institution")
+            raise ValueError("Unknown institution. Use one of: "
+                             + ", ".join(f"{k} ({v})" for k, v in INSTITUTIONS.items()))
 
-        # Validate limit
-        if not isinstance(limit, int) or limit <= 0:
-            raise ValueError("limit must be an integer larger than zero")
+        # Validate limit (None = no limit, fetch all results)
+        if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0):
+            raise ValueError("limit must be an integer larger than zero, or None for all results")
 
         # Handle fulltext resource routing
         if fulltext:
@@ -239,48 +328,23 @@ class btaConnection:
     def _validate_resource_specific_params(self, resource: Resource, params: dict):
         """Validate that parameters are only used with compatible resources.
 
-        Raises ValueError if a parameter is used with an incompatible resource.
+        Uses the SUPPORTED_FILTERS table derived from the OpenAPI specification.
+        Raises ValueError if a parameter is used with an incompatible resource,
+        so that filters are never silently dropped or ignored by the API.
         """
-        validations = [
-            ('person_name', ["aktivitaet", "person"],
-             "person_name can only be used with resource 'aktivitaet' or 'person'"),
-            ('personID', ["aktivitaet"],
-             "personID can only be used with resource 'aktivitaet'"),
-            ('gesta_id', ["vorgang"],
-             "gesta_id can only be used with resource 'vorgang'"),
-            ('procedure_positionID', ["aktivitaet"],
-             "procedure_positionID can only be used with resource 'aktivitaet'"),
-            ('consultation_status', ["vorgang"],
-             "consultation_status can only be used with resource 'vorgang'"),
-            ('publication_reference', ["vorgang"],
-             "publication_reference can only be used with resource 'vorgang'"),
-            ('initiative', ["vorgang"],
-             "initiative can only be used with resource 'vorgang'"),
-        ]
-
-        for param_name, allowed_resources, error_msg in validations:
-            if params.get(param_name) is not None and resource not in allowed_resources:
-                raise ValueError(error_msg)
-
-        # Special case: document_number cannot be used with person
-        if params.get('document_number') is not None and resource == "person":
-            raise ValueError("document_number cannot be used with resource 'person'")
-
-        # Special case: document_art
-        if params.get('document_art') is not None and resource not in ["vorgang", "vorgangsposition", "aktivitaet"]:
-            raise ValueError("document_art can only be used with resource 'vorgang', 'vorgangsposition', or 'aktivitaet'")
-
-        # Special case: question_number
-        if params.get('question_number') is not None and resource not in ["vorgang", "vorgangsposition", "aktivitaet"]:
-            raise ValueError("question_number can only be used with resource 'vorgang', 'vorgangsposition', or 'aktivitaet'")
-
-        # Special case: lead_department
-        if params.get('lead_department') is not None and resource not in ["vorgang", "vorgangsposition", "drucksache", "drucksache-text"]:
-            raise ValueError("lead_department can only be used with 'vorgang', 'vorgangsposition', 'drucksache', or 'drucksache-text'")
-
-        # Special case: originator
-        if params.get('originator') is not None and resource not in ["vorgang", "vorgangsposition", "drucksache", "drucksache-text", "aktivitaet"]:
-            raise ValueError("originator can only be used with 'vorgang', 'vorgangsposition', 'drucksache', 'drucksache-text', or 'aktivitaet'")
+        supported = SUPPORTED_FILTERS[resource]
+        for param_name, value in params.items():
+            if value is None:
+                continue
+            api_filter = FILTER_PARAMS.get(param_name)
+            if api_filter is None or api_filter in supported:
+                continue
+            allowed = sorted(r for r, filters in SUPPORTED_FILTERS.items() if api_filter in filters)
+            raise ValueError(
+                f"{param_name} can only be used with resource "
+                + ", ".join(f"'{r}'" for r in allowed)
+                + f" (not with '{resource}')"
+            )
 
     def _validate_and_normalize_params(self, resource: Resource, **params) -> dict:
         """Validate all filter parameters and normalize them to correct types.
@@ -312,26 +376,14 @@ class btaConnection:
         validated['lead_department'] = self._validate_str_list_param(params.get('lead_department'), "lead_department")
         validated['originator'] = self._validate_str_list_param(params.get('originator'), "originator")
 
-        # Resource-specific validation for title and process_type
-        if resource in ["drucksache", "drucksache-text", "vorgang", "vorgangsposition"]:
-            validated['title'] = self._validate_str_list_param(params.get('title'), "title")
-            validated['process_type'] = self._validate_str_list_param(params.get('process_type'), "process_type")
-            validated['process_type_notation'] = self._validate_int_list_param(params.get('process_type_notation'), "process_type_notation")
+        validated['title'] = self._validate_str_list_param(params.get('title'), "title")
+        validated['process_type'] = self._validate_str_list_param(params.get('process_type'), "process_type")
+        validated['process_type_notation'] = self._validate_int_list_param(params.get('process_type_notation'), "process_type_notation")
 
-            drucksache_type = params.get('drucksache_type')
-            if drucksache_type is not None and not isinstance(drucksache_type, str):
-                raise ValueError("drucksache_type must be a string.")
-            validated['drucksache_type'] = drucksache_type
-        else:
-            # Ensure these params aren't used with wrong resources
-            if params.get('title') is not None:
-                raise ValueError("Title must be combined with a document or process")
-            if params.get('drucksache_type') is not None:
-                raise ValueError("Drucksache type must be combined with a document or process")
-            validated['title'] = None
-            validated['process_type'] = None
-            validated['process_type_notation'] = None
-            validated['drucksache_type'] = None
+        drucksache_type = params.get('drucksache_type')
+        if drucksache_type is not None and not isinstance(drucksache_type, str):
+            raise ValueError("drucksache_type must be a string.")
+        validated['drucksache_type'] = drucksache_type
 
         # Validate reference ID parameters and their resource compatibility
         validated.update(self._validate_reference_ids(
@@ -343,13 +395,13 @@ class btaConnection:
         ))
 
         # Add simple passthrough params (before resource-specific validation)
-        validated['date_start'] = params.get('date_start')
-        validated['date_end'] = params.get('date_end')
+        validated['date_start'] = to_date_string(params.get('date_start'), "date_start")
+        validated['date_end'] = to_date_string(params.get('date_end'), "date_end")
         validated['institution'] = params.get('institution')
         validated['document_art'] = params.get('document_art')
 
         # Validate document_art value
-        if validated['document_art'] is not None and validated['document_art'] not in ["Drucksache", "Plenarprotokoll"]:
+        if validated['document_art'] is not None and validated['document_art'] not in DOCUMENT_ARTS:
             raise ValueError("document_art must be either 'Drucksache' or 'Plenarprotokoll'")
 
         # Validate resource-specific parameters
@@ -359,145 +411,135 @@ class btaConnection:
 
     def _build_api_payload(self, validated_params: dict) -> dict:
         """Build the API request payload from validated parameters."""
-        return {
-            "apikey": self.apikey,
-            "format": "json",  # Will be handled separately for object/pandas formats
-            "f.id": validated_params.get('fid'),
-            "f.datum.start": validated_params.get('date_start'),
-            "f.datum.end": validated_params.get('date_end'),
-            "f.aktualisiert.start": validated_params.get('updated_since'),
-            "f.aktualisiert.end": validated_params.get('updated_until'),
-            "f.drucksache": validated_params.get('drucksacheID'),
-            "f.plenarprotokoll": validated_params.get('plenaryprotocolID'),
-            "f.vorgang": validated_params.get('processID'),
-            "f.zuordnung": validated_params.get('institution'),
-            "f.deskriptor": validated_params.get('descriptor'),
-            "f.sachgebiet": validated_params.get('sachgebiet'),
-            "f.drucksachetyp": validated_params.get('drucksache_type'),
-            "f.vorgangstyp": validated_params.get('process_type'),
-            "f.vorgangstyp_notation": validated_params.get('process_type_notation'),
-            "f.titel": validated_params.get('title'),
-            "f.aktivitaet": validated_params.get('activityID'),
-            "f.wahlperiode": validated_params.get('legislative_period'),
-            "f.person": validated_params.get('person_name'),
-            "f.person_id": validated_params.get('personID'),
-            "f.dokumentnummer": validated_params.get('document_number'),
-            "f.dokumentart": validated_params.get('document_art'),
-            "f.frage_nummer": validated_params.get('question_number'),
-            "f.gesta": validated_params.get('gesta_id'),
-            "f.vorgangsposition_id": validated_params.get('procedure_positionID'),
-            "f.beratungsstand": validated_params.get('consultation_status'),
-            "f.verkuendung_fundstelle": validated_params.get('publication_reference'),
-            "f.initiative": validated_params.get('initiative'),
-            "f.ressort_fdf": validated_params.get('lead_department'),
-            "f.urheber": validated_params.get('originator'),
-            "cursor": None
-        }
+        # The API key is sent in the Authorization header (see _execute_paginated_query),
+        # so it never shows up in URLs, logs or exception messages.
+        payload: Dict[str, Any] = {"format": "json"}
+        for param_name, api_filter in FILTER_PARAMS.items():
+            payload[api_filter] = validated_params.get(param_name)
+        payload["cursor"] = None
+        return payload
 
-    def _execute_paginated_query(self, resource: Resource, payload: dict, limit: int) -> List[dict]:
-        """Execute the API query with automatic pagination."""
-        BASE_URL = "https://search.dip.bundestag.de/api/v1/"
-        r_url = BASE_URL + resource
+    BASE_URL = "https://search.dip.bundestag.de/api/v1/"
 
-        data = []
-        continue_pagination = True
+    def _request_page(self, r_url: str, payload: dict) -> dict:
+        """Request a single page from the API and translate HTTP errors into exceptions."""
+        r = self.session.get(r_url, params=payload, timeout=30,
+                             headers={"Authorization": f"ApiKey {self.apikey}"})
+        logger.debug(r.url)
 
-        while continue_pagination:
-            r = self.session.get(r_url, params=payload, timeout=30)
-            logger.debug(r.url)
+        if r.status_code == requests.codes.ok:
+            return r.json()
 
-            if r.status_code == requests.codes.ok:
-                content = r.json()
-                documents_on_page = content.get("documents", [])
-
-                if content.get("numFound", 0) == 0:
-                    logging.info("No data was returned.")
-                    continue_pagination = False
-                else:
-                    data.extend(documents_on_page)
-                    next_cursor = content.get("cursor")
-
-                    # Stop paginating if limit reached or no more pages
-                    if len(data) >= limit:
-                        data = data[0:limit]
-                        continue_pagination = False
-                    elif not next_cursor or payload["cursor"] == next_cursor:
-                        continue_pagination = False
-                    else:
-                        payload["cursor"] = next_cursor
-                        time.sleep(self.delay * random.uniform(0.8, 1.2) if self.delay > 0 else 0.0)
-
-            elif r.status_code in (400, 403):
-                try:
-                    body = r.text.lower()
-                except Exception:
-                    body = ""
-                bot_signals = (
-                    '.enodia' in r.url
-                    or '/challenge' in r.url
-                    or any(kw in body for kw in ('enodia', 'captcha', 'bot protection', 'access denied'))
+        if r.status_code in (400, 403):
+            try:
+                body = r.text.lower()
+            except Exception:
+                body = ""
+            bot_signals = (
+                '.enodia' in r.url
+                or '/challenge' in r.url
+                or any(kw in body for kw in ('enodia', 'captcha', 'bot protection', 'access denied'))
+            )
+            if bot_signals or r.status_code == 403:
+                msg = (
+                    "Bot protection detected (Enodia challenge). The Bundestag API blocked this request.\n"
+                    "Possible causes:\n"
+                    "  • Too many parallel requests (API limit: 25 concurrent)\n"
+                    "  • Too many requests per second (no delay between paginated calls)\n"
+                    "  • Shared generic API key is being used by many scripts simultaneously\n"
+                    "Solutions:\n"
+                    "  1. Add a delay: btaConnection(delay=0.5)\n"
+                    "  2. Reduce parallel workers to ≤5 in ThreadPoolExecutor\n"
+                    "  3. Use a personal API key: https://dip.bundestag.de/\n"
                 )
-                if bot_signals or r.status_code == 403:
-                    msg = (
-                        "Bot protection detected (Enodia challenge). The Bundestag API blocked this request.\n"
-                        "Possible causes:\n"
-                        "  • Too many parallel requests (API limit: 25 concurrent)\n"
-                        "  • Too many requests per second (no delay between paginated calls)\n"
-                        "  • Shared generic API key is being used by many scripts simultaneously\n"
-                        "Solutions:\n"
-                        "  1. Add a delay: btaConnection(delay=0.5)\n"
-                        "  2. Reduce parallel workers to ≤5 in ThreadPoolExecutor\n"
-                        "  3. Use a personal API key: https://dip.bundestag.de/\n"
-                    )
-                    logger.error(msg)
-                    raise ConnectionError(msg)
-                else:
-                    msg = f"A syntax error occurred. Code {r.status_code}: {r.reason}"
-                    logger.error(msg)
-                    raise ValueError(f"Bad request to Bundestag API: {r.reason}")
-
-            elif r.status_code == 401:
-                msg = f"An authorization error occurred. Likely an error with your API key. Code {r.status_code}: {r.reason}"
                 logger.error(msg)
-                raise ValueError(f"Authorization failed. Check your API key: {r.reason}")
+                raise ConnectionError(msg)
+            msg = f"A syntax error occurred. Code {r.status_code}: {r.reason}"
+            logger.error(msg)
+            raise ValueError(f"Bad request to Bundestag API: {r.reason}")
 
-            elif r.status_code == 404:
-                msg = f"The API is not reachable. Code {r.status_code}: {r.reason}"
-                logger.error(msg)
-                raise ConnectionError(f"Bundestag API not reachable: {r.reason}")
+        if r.status_code == 401:
+            msg = f"An authorization error occurred. Likely an error with your API key. Code {r.status_code}: {r.reason}"
+            logger.error(msg)
+            raise ValueError(f"Authorization failed. Check your API key: {r.reason}")
 
-            else:
-                msg = f"An error occurred. Code {r.status_code}: {r.reason}"
-                logger.error(msg)
-                raise requests.HTTPError(f"HTTP {r.status_code}: {r.reason}")
+        if r.status_code == 404:
+            msg = f"The API is not reachable. Code {r.status_code}: {r.reason}"
+            logger.error(msg)
+            raise ConnectionError(f"Bundestag API not reachable: {r.reason}")
 
-        self._sanitize_pdf_urls(data)
+        msg = f"An error occurred. Code {r.status_code}: {r.reason}"
+        logger.error(msg)
+        raise requests.HTTPError(f"HTTP {r.status_code}: {r.reason}")
+
+    def _iter_documents(self, resource: Resource, payload: dict, limit: Optional[int],
+                        stats: Optional[dict] = None) -> Iterator[dict]:
+        """Yield documents page by page, following the cursor until the end or the limit.
+
+        If `stats` is given, the total number of matches ('numFound') is stored in it.
+        """
+        r_url = self.BASE_URL + resource
+        yielded = 0
+        while True:
+            content = self._request_page(r_url, payload)
+            num_found = content.get("numFound", 0)
+            if stats is not None and "numFound" not in stats:
+                stats["numFound"] = num_found
+            if num_found == 0:
+                logger.info("No data was returned.")
+                return
+
+            documents = content.get("documents") or []
+            self._sanitize_pdf_urls(documents)
+            for document in documents:
+                if limit is not None and yielded >= limit:
+                    return
+                yield document
+                yielded += 1
+
+            # Stop paginating if limit reached or no more pages
+            next_cursor = content.get("cursor")
+            if limit is not None and yielded >= limit:
+                return
+            if not next_cursor or payload["cursor"] == next_cursor:
+                return
+            payload["cursor"] = next_cursor
+            time.sleep(self.delay * random.uniform(0.8, 1.2) if self.delay > 0 else 0.0)
+
+    def _execute_paginated_query(self, resource: Resource, payload: dict, limit: Optional[int]) -> List[dict]:
+        """Execute the API query with automatic pagination."""
+        stats: dict = {}
+        data = list(self._iter_documents(resource, payload, limit, stats))
+        num_found = stats.get("numFound", 0)
         if len(data) == 0:
             logger.info("No data was returned.")
-
+        elif limit is not None and num_found > len(data):
+            logger.info(
+                "Returned %d of %d matching records (limit=%d). Increase limit, use limit=None "
+                "or iter_query() to get more.", len(data), num_found, limit)
         return data
+
+    def _to_models(self, data: List[dict], resource: Resource) -> List[Any]:
+        """Convert raw records into model objects."""
+        model_class = MODEL_MAP[resource]
+        return [model_class(item) for item in data]
 
     def _format_results(self, data: List[dict], return_format: str, resource: Resource) -> Union[List[Any], pd.DataFrame]:
         """Format the query results according to the requested return format."""
 
         # Handle object format
         if return_format == "object":
-            model_map = {
-                "aktivitaet": Aktivitaet,
-                "drucksache": Drucksache,
-                "drucksache-text": Drucksache,
-                "person": Person,
-                "plenarprotokoll": Plenarprotokoll,
-                "plenarprotokoll-text": Plenarprotokoll,
-                "vorgang": Vorgang,
-                "vorgangsposition": Vorgangsposition,
-            }
-            model_class = model_map.get(resource)
-            if model_class:
-                return [model_class(item) for item in data]
+            return self._to_models(data, resource)
 
         # Handle pandas format
         if return_format == "pandas":
+            try:
+                import pandas as pd
+            except ImportError as e:
+                raise ImportError(
+                    "return_format='pandas' requires pandas. Install it with "
+                    "'pip install bundestag_api[pandas]' or 'conda install pandas'."
+                ) from e
             return pd.json_normalize(data)
 
         # Default: return JSON (list of dicts)
@@ -506,10 +548,10 @@ class btaConnection:
     def query(self,
               resource: Resource,
               return_format: ReturnFormat ="json",
-              limit: int = 100,
+              limit: Optional[int] = 100,
               fid: Optional[Union[int, List[int]]] = None,
-              date_start: Optional[str] = None,
-              date_end: Optional[str] = None,
+              date_start: Optional[Union[str, date]] = None,
+              date_end: Optional[Union[str, date]] = None,
               updated_since: Optional[Union[str, datetime]] = None,
               updated_until: Optional[Union[str, datetime]] = None,
               institution: Optional[Institution] = None,
@@ -547,19 +589,21 @@ class btaConnection:
                 drucksache, drucksache-text, person, plenarprotokoll,
                 plenarprotokoll-text, vorgang or vorgangsposition
             return_format: str, optional
-                Return format of the data. Defaults to json. XML not implemented
-                yet. Other option is "object" which will return results as class
-                objects
+                Return format of the data. Defaults to "json" (list of dicts).
+                "object" returns model class instances, "pandas" returns a
+                DataFrame (requires pandas).
             limit: int, optional
-                Number of maximal results to be returned. Defaults to 100
+                Number of maximal results to be returned. Defaults to 100.
+                Use None to retrieve all matching results (see also `count`
+                and `iter_query` for large datasets).
             fid: int/list, optional
                 ID of an entity. Can be a list to retrieve more than one entity
-            date_start: str, optional
-                Date after which entities should be retrieved. Format
-                is "YYYY-MM-DD"
-            date_end: str, optional
-                Date before which entities should be retrieved. Format
-                is "YYYY-MM-DD"
+            date_start: str/date, optional
+                Earliest document date (inclusive). String "YYYY-MM-DD" or a
+                datetime.date / datetime.datetime object
+            date_end: str/date, optional
+                Latest document date (inclusive). String "YYYY-MM-DD" or a
+                datetime.date / datetime.datetime object
             updated_since: str, optional
                 Date and time after which updated documents are to be retrieved
             updated_until: str, optional
@@ -595,7 +639,6 @@ class btaConnection:
                 Keyword that can be found in the title of documents. Multiple 
                 strings can be supplied as a list and will be joined via
                 an OR-search.
-            fulltext: boolean
             activityID: int, optional
                 Entity ID of an activity. Can be used to select procedure positions.
             legislative_period: int/list, optional
@@ -629,50 +672,90 @@ class btaConnection:
 
         """
 
-        # 1. Validate basic parameters
-        resource = self._validate_basic_params(resource, return_format, limit, institution, fulltext)
+        # 1. Validate all parameters and build the API payload
+        filter_params = {name: value for name, value in locals().items() if name in FILTER_PARAMS}
+        resource, payload = self._prepare_query(resource, return_format, limit, fulltext, **filter_params)
 
-        # 2. Validate and normalize all filter parameters
-        validated_params = self._validate_and_normalize_params(
-            resource=resource,
-            fid=fid,
-            date_start=date_start,
-            date_end=date_end,
-            updated_since=updated_since,
-            updated_until=updated_until,
-            drucksacheID=drucksacheID,
-            plenaryprotocolID=plenaryprotocolID,
-            processID=processID,
-            descriptor=descriptor,
-            sachgebiet=sachgebiet,
-            drucksache_type=drucksache_type,
-            process_type=process_type,
-            process_type_notation=process_type_notation,
-            title=title,
-            activityID=activityID,
-            legislative_period=legislative_period,
-            person_name=person_name,
-            personID=personID,
-            document_number=document_number,
-            document_art=document_art,
-            question_number=question_number,
-            gesta_id=gesta_id,
-            procedure_positionID=procedure_positionID,
-            consultation_status=consultation_status,
-            publication_reference=publication_reference,
-            initiative=initiative,
-            lead_department=lead_department,
-            originator=originator
-        )
-
-        # 3. Build API payload
-        payload = self._build_api_payload(validated_params)
-
-        # 4. Execute paginated query
+        # 2. Execute paginated query
         data = self._execute_paginated_query(resource, payload, limit)
 
-        # 5. Format and return results
+        # 3. Format and return results
         return self._format_results(data, return_format, resource)
+
+    def _prepare_query(self, resource: Resource, return_format: str, limit: Optional[int],
+                       fulltext: bool, **filter_params) -> Tuple[Resource, dict]:
+        """Validate all parameters and return the (possibly fulltext) resource and API payload."""
+        unknown = set(filter_params) - set(FILTER_PARAMS)
+        if unknown:
+            raise TypeError(
+                f"Unknown filter(s): {', '.join(sorted(unknown))}. "
+                f"Valid filters: {', '.join(FILTER_PARAMS)}"
+            )
+        resource = self._validate_basic_params(
+            resource, return_format, limit, filter_params.get("institution"), fulltext)
+        validated_params = self._validate_and_normalize_params(resource=resource, **filter_params)
+        return resource, self._build_api_payload(validated_params)
+
+    def iter_query(self,
+                   resource: Resource,
+                   return_format: Literal["json", "object"] = "json",
+                   limit: Optional[int] = None,
+                   fulltext: bool = False,
+                   **filters) -> Iterator[Any]:
+        """
+        Iterates over search results page by page instead of loading all at once.
+
+        Accepts the same filters as `query`. Pages are only requested while you
+        iterate, so this is suitable for large datasets: memory use stays constant
+        and you can stop at any time.
+
+        Parameters
+        ----------
+        resource: str
+            The resource type to be queried, see `query`.
+        return_format: str, optional
+            "json" (dicts, default) or "object" (model instances).
+        limit: int, optional
+            Maximum number of records. Defaults to None (all matching records).
+        fulltext: bool, optional
+            Request the fulltext resource ('drucksache' and 'plenarprotokoll' only).
+        **filters:
+            Any filter accepted by `query`.
+
+        Yields
+        ------
+        dict or model object
+
+        Examples
+        --------
+        >>> for doc in bt.iter_query("drucksache", legislative_period=20):
+        ...     process(doc)
+        """
+        if return_format not in ("json", "object"):
+            raise ValueError("return_format must be 'json' or 'object' for iter_query.")
+        # Validate eagerly so errors surface when calling iter_query, not on first next()
+        resource, payload = self._prepare_query(resource, return_format, limit, fulltext, **filters)
+
+        def generator():
+            for document in self._iter_documents(resource, payload, limit):
+                yield MODEL_MAP[resource](document) if return_format == "object" else document
+
+        return generator()
+
+    def count(self, resource: Resource, fulltext: bool = False, **filters) -> int:
+        """
+        Returns the number of records matching the filters, with a single request.
+
+        Accepts the same filters as `query`. Useful to check the size of a
+        dataset before downloading it.
+
+        Examples
+        --------
+        >>> bt.count("drucksache", legislative_period=20, drucksache_type="Kleine Anfrage")
+        """
+        resource, payload = self._prepare_query(resource, "json", 1, fulltext, **filters)
+        content = self._request_page(self.BASE_URL + resource, payload)
+        return int(content.get("numFound", 0))
 
     # The following two methods are used to construct the specific search and get methods
     def _search(self, resource: Resource, **filters):
@@ -902,6 +985,492 @@ class btaConnection:
         """
         return self._get("aktivitaet", btid, **filters)
     
+    # speeches (structured XML plenary protocols)
+    def _download_protocol_xml(self, xml_url: str) -> bytes:
+        """Download a structured XML plenary protocol from the Bundestag document server."""
+        if not isinstance(xml_url, str) or not xml_url.startswith("https://"):
+            raise ValueError(f"Invalid XML URL: {xml_url!r}")
+        # No Authorization header: the document server does not need the API key.
+        r = self.session.get(xml_url, timeout=60, headers={"Accept": "application/xml"})
+        logger.debug(xml_url)
+        if r.status_code != requests.codes.ok:
+            msg = f"Could not download {xml_url}. Code {r.status_code}: {r.reason}"
+            logger.error(msg)
+            raise requests.HTTPError(msg)
+        return r.content
+
+    def _protocol_record(self, protocol: Union[int, dict]) -> dict:
+        """Return the DIP metadata of a plenary protocol given its ID or a search result."""
+        if isinstance(protocol, dict):
+            return protocol
+        records = self.get_plenaryprotocol(protocol)
+        if not records:
+            raise ValueError(f"Plenary protocol with ID {protocol} not found.")
+        return records[0]
+
+    def parse_protocol(self, protocol: Union[int, dict]) -> ParsedProtocol:
+        """
+        Downloads and parses the structured XML version of a plenary protocol.
+
+        Structured XML is available for Bundestag protocols from the 18th
+        legislative period onwards (not for Bundesrat protocols).
+
+        Parameters
+        ----------
+        protocol: int or dict
+            The DIP ID of a plenary protocol ('plenarprotokoll'), or a protocol
+            record as returned by `search_plenaryprotocol`.
+
+        Returns
+        -------
+        ParsedProtocol
+            Object with the attributes `metadata`, `speeches`, `segments` and
+            `comments` (lists of dicts) and a `to_dataframes()` method.
+        """
+        record = self._protocol_record(protocol)
+        xml_url = (record.get("fundstelle") or {}).get("xml_url")
+        if not xml_url:
+            raise ValueError(
+                f"No structured XML available for plenary protocol "
+                f"{record.get('dokumentnummer', record.get('id'))} ({record.get('herausgeber')}). "
+                "XML protocols exist for the Bundestag from the 18th legislative period onwards."
+            )
+        content = self._download_protocol_xml(xml_url)
+        return parse_protocol_xml(content, extra_metadata={
+            "protocol_id": int(record["id"]),
+            "document_number": record.get("dokumentnummer"),
+        })
+
+    @staticmethod
+    def _collect_speech_rows(parsed: List[ParsedProtocol], level: str,
+                             speaker: Optional[str], faction: Optional[str]) -> List[dict]:
+        """Combine rows of the requested level and apply speaker/faction filters."""
+        rows: List[dict] = []
+        for protocol in parsed:
+            speech_ids = None
+            if speaker is not None or faction is not None:
+                speech_ids = {
+                    s["speech_id"] for s in protocol.speeches
+                    if (speaker is None or speaker.lower() in (s["speaker_name"] or "").lower())
+                    and (faction is None or faction.lower() in (s["faction"] or "").lower())
+                }
+            table = {"speech": protocol.speeches, "segment": protocol.segments,
+                     "comment": protocol.comments}[level]
+            rows.extend(r for r in table if speech_ids is None or r["speech_id"] in speech_ids)
+        return rows
+
+    @staticmethod
+    def _validate_speech_args(level: str, return_format: str) -> None:
+        if level not in ("speech", "segment", "comment"):
+            raise ValueError("level must be 'speech', 'segment' or 'comment'.")
+        if return_format not in ("json", "pandas"):
+            raise ValueError("return_format must be 'json' or 'pandas' for speeches.")
+
+    def _format_rows(self, rows: List[dict], return_format: str):
+        """Return flat rows as list of dicts or pandas DataFrame."""
+        if return_format == "pandas":
+            try:
+                import pandas as pd
+            except ImportError as e:
+                raise ImportError(
+                    "return_format='pandas' requires pandas. Install it with "
+                    "'pip install bundestag_api[pandas]' or 'conda install pandas'."
+                ) from e
+            return pd.DataFrame(rows)
+        return rows
+
+    def get_speeches(self,
+                     btid: Union[int, List[int]],
+                     level: SpeechLevel = "speech",
+                     return_format: Literal["json", "pandas"] = "json",
+                     speaker: Optional[str] = None,
+                     faction: Optional[str] = None) -> Union[List[dict], pd.DataFrame]:
+        """
+        Retrieves the speeches of one or more plenary protocols by their ID(s).
+
+        Parameters
+        ----------
+        btid: int or list of int
+            The DIP ID or IDs of the plenary protocol(s).
+        level: str, optional
+            "speech" (default): one row per speech, text of the main speaker only.
+            "segment": one row per passage of one speaker, including the presiding
+            officer and interposed questions.
+            "comment": one row per interjection (applause, heckling, laughter, ...).
+        return_format: str, optional
+            "json" (list of dicts, default) or "pandas" (DataFrame).
+        speaker: str, optional
+            Only speeches whose speaker name contains this string (case-insensitive).
+        faction: str, optional
+            Only speeches of speakers whose faction contains this string
+            (case-insensitive), e.g. "SPD" or "GRÜNE".
+
+        Returns
+        -------
+        Union[List[dict], pd.DataFrame]
+        """
+        self._validate_speech_args(level, return_format)
+        ids = self._validate_int_list_param(btid, "btid") or []
+        parsed = []
+        for i, protocol_id in enumerate(ids):
+            if i > 0 and self.delay > 0:
+                time.sleep(self.delay * random.uniform(0.8, 1.2))
+            parsed.append(self.parse_protocol(protocol_id))
+        rows = self._collect_speech_rows(parsed, level, speaker, faction)
+        return self._format_rows(rows, return_format)
+
+    def search_speeches(self,
+                        level: SpeechLevel = "speech",
+                        return_format: Literal["json", "pandas"] = "json",
+                        speaker: Optional[str] = None,
+                        faction: Optional[str] = None,
+                        max_protocols: int = 10,
+                        **filters) -> Union[List[dict], pd.DataFrame]:
+        """
+        Searches plenary protocols and returns the speeches they contain.
+
+        Protocols are selected with the same filters as `search_plenaryprotocol`
+        (e.g. `date_start`, `date_end`, `legislative_period`, `document_number`).
+        Only Bundestag protocols have structured XML, so `institution` defaults
+        to "BT". Protocols without XML are skipped.
+
+        Every protocol is a separate download of several megabytes, so the number
+        of protocols is capped by `max_protocols` (default 10).
+
+        Parameters
+        ----------
+        level, return_format, speaker, faction:
+            See `get_speeches`.
+        max_protocols: int, optional
+            Maximum number of protocols to download. Defaults to 10.
+        **filters:
+            Filters passed to `search_plenaryprotocol`.
+
+        Returns
+        -------
+        Union[List[dict], pd.DataFrame]
+        """
+        self._validate_speech_args(level, return_format)
+        if "limit" in filters:
+            raise ValueError("Use max_protocols instead of limit to cap the number of protocols.")
+        if "return_format" in filters or "fulltext" in filters:
+            raise ValueError("return_format and fulltext cannot be passed as protocol filters.")
+        filters.setdefault("institution", "BT")
+        records = self.search_plenaryprotocol(limit=max_protocols, **filters)
+        parsed = []
+        for record in records:
+            if not (record.get("fundstelle") or {}).get("xml_url"):
+                logger.info("Skipping plenary protocol %s: no structured XML available.",
+                            record.get("dokumentnummer"))
+                continue
+            if parsed and self.delay > 0:
+                time.sleep(self.delay * random.uniform(0.8, 1.2))
+            parsed.append(self.parse_protocol(record))
+        rows = self._collect_speech_rows(parsed, level, speaker, faction)
+        return self._format_rows(rows, return_format)
+
+    # decisions (Beschlussfassung)
+    @staticmethod
+    def _validate_decision_args(return_format: str, voting_method: Optional[str]) -> None:
+        if return_format not in ("json", "pandas"):
+            raise ValueError("return_format must be 'json' or 'pandas' for decisions.")
+        if voting_method is not None and voting_method not in VOTING_METHODS:
+            raise ValueError("voting_method must be one of: " + ", ".join(VOTING_METHODS))
+
+    @staticmethod
+    def _filter_decisions(rows: List[dict], voting_method: Optional[str]) -> List[dict]:
+        if voting_method is None:
+            return rows
+        return [r for r in rows if r["voting_method"] == voting_method]
+
+    def get_decisions(self,
+                      procedure_id: Union[int, List[int]],
+                      return_format: Literal["json", "pandas"] = "json",
+                      voting_method: Optional[str] = None) -> Union[List[dict], pd.DataFrame]:
+        """
+        Retrieves all decisions ('Beschlussfassung') of one or more procedures.
+
+        Collects the procedure positions of each procedure ('vorgang') and returns
+        one row per decision, e.g. the adoption of a bill by the Bundestag or the
+        consent of the Bundesrat.
+
+        Note: `decision` refers to the document in `decided_document_number`.
+        "Annahme der Beschlussempfehlung" can mean that a motion was rejected if
+        the committee recommended rejection.
+
+        Parameters
+        ----------
+        procedure_id: int or list of int
+            The DIP ID or IDs of the procedure(s) ('vorgang').
+        return_format: str, optional
+            "json" (list of dicts, default) or "pandas" (DataFrame).
+        voting_method: str, optional
+            Only decisions with this voting method, e.g. "Namentliche Abstimmung"
+            (recorded vote). See `bundestag_api.decisions.VOTING_METHODS`.
+
+        Returns
+        -------
+        Union[List[dict], pd.DataFrame]
+        """
+        self._validate_decision_args(return_format, voting_method)
+        ids = self._validate_int_list_param(procedure_id, "procedure_id") or []
+        rows: List[dict] = []
+        for i, pid in enumerate(ids):
+            if i > 0 and self.delay > 0:
+                time.sleep(self.delay * random.uniform(0.8, 1.2))
+            positions = self.search_procedureposition(processID=pid, limit=None)
+            rows.extend(flatten_decisions(positions))
+        rows = self._filter_decisions(rows, voting_method)
+        return self._format_rows(rows, return_format)
+
+    def search_decisions(self,
+                         limit: int = 100,
+                         return_format: Literal["json", "pandas"] = "json",
+                         voting_method: Optional[str] = None,
+                         **filters) -> Union[List[dict], pd.DataFrame]:
+        """
+        Searches procedure positions and returns the decisions they contain.
+
+        Positions are selected with the same filters as `search_procedureposition`
+        (e.g. `date_start`, `date_end`, `legislative_period`, `process_type`,
+        `institution`, `title`). Positions without a decision are skipped.
+
+        Decisions are recorded in plenary protocols, so only positions linked to a
+        plenary protocol are scanned by default (`document_art="Plenarprotokoll"`).
+        Otherwise `limit` would mostly be used up by drafts and other documents
+        without decisions. Pass `document_art=None` to scan all positions.
+
+        Parameters
+        ----------
+        limit: int, optional
+            Maximum number of procedure positions to scan (not decisions).
+            Defaults to 100. Use None to scan all matching positions.
+        return_format: str, optional
+            "json" (list of dicts, default) or "pandas" (DataFrame).
+        voting_method: str, optional
+            Only decisions with this voting method, e.g. "Namentliche Abstimmung".
+        **filters:
+            Filters passed to `search_procedureposition`.
+
+        Returns
+        -------
+        Union[List[dict], pd.DataFrame]
+        """
+        self._validate_decision_args(return_format, voting_method)
+        if "return_format" in filters or "fulltext" in filters:
+            raise ValueError("return_format and fulltext cannot be passed as filters.")
+        filters.setdefault("document_art", "Plenarprotokoll")
+        positions = self.search_procedureposition(limit=limit, **filters)
+        rows = self._filter_decisions(flatten_decisions(positions), voting_method)
+        return self._format_rows(rows, return_format)
+
+    # incremental sync
+    def _fetch_updates_raw(self, resource: Resource, since: Union[str, datetime],
+                           until: Optional[Union[str, datetime]], fulltext: bool,
+                           filters: dict, return_format: str) -> Tuple[List[dict], Optional[str]]:
+        if return_format not in ("json", "object", "pandas"):
+            raise ValueError("return_format must be 'json', 'object' or 'pandas'.")
+        if since is None:
+            raise ValueError("since is required, e.g. since='2024-06-01T00:00:00'.")
+        for reserved in ("updated_since", "updated_until", "limit", "return_format"):
+            if reserved in filters:
+                raise ValueError(f"{reserved} cannot be passed as a filter here.")
+        records = self.query(resource=resource, limit=None, updated_since=since,
+                             updated_until=until, fulltext=fulltext, **filters)
+        return records, to_iso8601(since)
+
+    def fetch_updates(self,
+                      resource: Resource,
+                      since: Union[str, datetime],
+                      until: Optional[Union[str, datetime]] = None,
+                      return_format: ReturnFormat = "json",
+                      fulltext: bool = False,
+                      **filters) -> SyncResult:
+        """
+        Retrieves all records that were created or updated since a point in time.
+
+        Uses the 'aktualisiert' timestamp of the API. The returned `checkpoint`
+        is the latest update among the records; pass it as `since` in the next
+        run to only get newer changes. The boundary is inclusive, so records
+        updated exactly at the checkpoint are returned again (use `sync` to
+        avoid these duplicates automatically).
+
+        Parameters
+        ----------
+        resource: str
+            The resource type, e.g. "drucksache" or "vorgang".
+        since: str or datetime
+            Start of the period, e.g. "2024-06-01T00:00:00" (local time Berlin)
+            or "2024-06-01T00:00:00+02:00", or a datetime object.
+        until: str or datetime, optional
+            End of the period.
+        return_format: str, optional
+            "json" (default), "object" or "pandas" for `SyncResult.records`.
+        fulltext: bool, optional
+            Request the fulltext resource ('drucksache' and 'plenarprotokoll' only).
+        **filters:
+            Any filter accepted by `query`, e.g. institution="BT".
+
+        Returns
+        -------
+        SyncResult
+            With `records`, `since` and `checkpoint`.
+        """
+        records, since_str = self._fetch_updates_raw(resource, since, until, fulltext, filters, return_format)
+        checkpoint = latest_update(records) or since_str
+        resource_name = cast(Resource, resource + "-text") if fulltext and not resource.endswith("-text") else resource
+        return SyncResult(
+            records=self._format_results(records, return_format, resource_name),
+            since=since_str,
+            checkpoint=checkpoint,
+            ids_at_checkpoint=[str(r.get("id")) for r in records if r.get("aktualisiert") == checkpoint],
+        )
+
+    def sync(self,
+             resource: Resource,
+             state_file: str,
+             since: Optional[Union[str, datetime]] = None,
+             return_format: ReturnFormat = "json",
+             fulltext: bool = False,
+             **filters) -> SyncResult:
+        """
+        Retrieves new or updated records since the last run and remembers the checkpoint.
+
+        The checkpoint is stored in a JSON file per resource and filter
+        combination. Records already returned at the previous checkpoint are
+        not returned again. Ideal for scheduled jobs, e.g. a daily cron job that
+        collects new documents.
+
+        Parameters
+        ----------
+        resource: str
+            The resource type, e.g. "drucksache" or "vorgang".
+        state_file: str
+            Path of the JSON file that stores the checkpoints. It is created if
+            it does not exist and only updated after a successful run.
+        since: str or datetime, optional
+            Start for the first run, when no checkpoint is stored yet. Ignored
+            once a checkpoint exists.
+        return_format: str, optional
+            "json" (default), "object" or "pandas" for `SyncResult.records`.
+        fulltext: bool, optional
+            Request the fulltext resource ('drucksache' and 'plenarprotokoll' only).
+        **filters:
+            Any filter accepted by `query`, e.g. institution="BT".
+
+        Returns
+        -------
+        SyncResult
+
+        Examples
+        --------
+        >>> result = bt.sync("drucksache", state_file="dip_state.json",
+        ...                  since="2024-06-01T00:00:00", institution="BT")
+        >>> print(f"{len(result)} new or updated documents")
+        """
+        key = state_key(resource + ("-text" if fulltext and not resource.endswith("-text") else ""), filters)
+        entry = load_state(state_file).get(key) or {}
+        start = entry.get("checkpoint") or since
+        if start is None:
+            raise ValueError(
+                "No checkpoint stored for this query yet. Pass since=... for the first run, "
+                "e.g. since='2024-06-01T00:00:00'."
+            )
+
+        records, since_str = self._fetch_updates_raw(resource, start, None, fulltext, filters, return_format)
+        # Drop records that were already delivered at the previous checkpoint
+        seen = set(entry.get("ids_at_checkpoint") or [])
+        if entry.get("checkpoint"):
+            records = [r for r in records
+                       if not (str(r.get("id")) in seen and r.get("aktualisiert") == entry["checkpoint"])]
+
+        checkpoint = latest_update(records) or since_str
+        ids_at_checkpoint = [str(r.get("id")) for r in records if r.get("aktualisiert") == checkpoint]
+        if checkpoint == entry.get("checkpoint"):
+            ids_at_checkpoint = sorted(seen | set(ids_at_checkpoint))
+
+        # Format before saving: if formatting fails (e.g. pandas missing), the checkpoint
+        # must not advance, otherwise these records would be skipped in the next run.
+        resource_name = cast(Resource, resource + "-text") if fulltext and not resource.endswith("-text") else resource
+        formatted = self._format_results(records, return_format, resource_name)
+
+        # Re-reads the file under a lock and only replaces this query's entry,
+        # so parallel runs sharing one state file do not overwrite each other.
+        update_state_entry(state_file, key, {
+            "checkpoint": checkpoint, "ids_at_checkpoint": ids_at_checkpoint,
+            "last_run": datetime.now().isoformat(timespec="seconds")})
+
+        return SyncResult(
+            records=formatted,
+            since=since_str,
+            checkpoint=checkpoint,
+            ids_at_checkpoint=ids_at_checkpoint,
+        )
+
+    # vocabularies
+    def discover_values(self,
+                        resource: Resource,
+                        field: str,
+                        limit: int = 1000,
+                        return_format: Literal["json", "pandas"] = "json",
+                        **filters) -> Union[List[dict], pd.DataFrame]:
+        """
+        Counts which values of a field actually occur in the data.
+
+        Useful for open vocabularies that are not fixed in the API
+        specification, e.g. subject areas, document types or consultation
+        states. The result shows the exact spelling to use in filters.
+
+        Parameters
+        ----------
+        resource: str
+            The resource to sample, e.g. "vorgang" or "drucksache".
+        field: str
+            The field to count. Use dots for nested fields, e.g. "sachgebiet",
+            "beratungsstand", "drucksachetyp", "urheber.titel",
+            "deskriptor.name" or "ressort.titel". Lists are counted per element.
+        limit: int, optional
+            Number of records to sample. Defaults to 1000. Rare values may be
+            missing from a small sample.
+        return_format: str, optional
+            "json" (list of {"value", "count"} dicts, default) or "pandas".
+        **filters:
+            Filters to restrict the sample, e.g. legislative_period=20.
+
+        Returns
+        -------
+        Union[List[dict], pd.DataFrame]
+            Values sorted by frequency, most frequent first.
+
+        Examples
+        --------
+        >>> bt.discover_values("vorgang", "sachgebiet", legislative_period=20)
+        >>> bt.discover_values("drucksache", "drucksachetyp", institution="BT")
+        """
+        if return_format not in ("json", "pandas"):
+            raise ValueError("return_format must be 'json' or 'pandas'.")
+        if not isinstance(field, str) or not field:
+            raise ValueError("field must be a non-empty string, e.g. 'sachgebiet'.")
+        records = self.query(resource=resource, limit=limit, **filters)
+        counts: Dict[str, int] = {}
+        for record in records:
+            for value in self._values_at_path(record, field.split(".")):
+                counts[value] = counts.get(value, 0) + 1
+        rows = [{"value": v, "count": c}
+                for v, c in sorted(counts.items(), key=lambda item: (-item[1], str(item[0])))]
+        return self._format_rows(rows, return_format)
+
+    @classmethod
+    def _values_at_path(cls, node: Any, path: List[str]) -> List[Any]:
+        """Return all scalar values at a dotted path, flattening lists."""
+        if isinstance(node, list):
+            return [v for item in node for v in cls._values_at_path(item, path)]
+        if not path:
+            return [] if node is None or isinstance(node, dict) else [node]
+        if not isinstance(node, dict):
+            return []
+        return cls._values_at_path(node.get(path[0]), path[1:])
+
     # utility
     def list_methods(self):
         """

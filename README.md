@@ -1,7 +1,7 @@
 # Bundestag API
 
 [![Upload Python Package](https://github.com/jschibberges/Bundestag-API/actions/workflows/python-publish.yml/badge.svg)](https://github.com/jschibberges/Bundestag-API/actions/workflows/python-publish.yml)
-[![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
 A beginner-friendly Python wrapper for accessing German Federal Parliament (Bundestag) data. This package simplifies querying parliamentary documents, procedures, plenary protocols, and member information through the official Bundestag API.
 
@@ -10,8 +10,8 @@ Perfect for data scientists, researchers, and political analysts who want to ana
 ## What You Can Do
 
 - **Analyze Parliamentary Documents**: Access bills, reports, and official documents
-- **Track Legislative Processes**: Follow how laws move through parliament
-- **Study Voting Patterns**: Examine plenary protocols and activities
+- **Track Legislative Processes**: Follow how laws move through parliament and how they were decided
+- **Follow Parliamentary Debates**: Examine plenary protocols, speeches and other activities
 - **Research Politicians**: Get information about current and former members of parliament
 - **Time Series Analysis**: Filter data by date ranges for trend analysis
 
@@ -20,8 +20,11 @@ Perfect for data scientists, researchers, and political analysts who want to ana
 ### Installation
 
 ```bash
-pip install bundestag_api
+pip install bundestag_api            # core package
+pip install "bundestag_api[pandas]"  # with pandas support for return_format="pandas"
 ```
+
+Python 3.8 or newer is required.
 
 ### Your First Query
 
@@ -47,7 +50,7 @@ The Bundestag API provides access to 6 main data types:
 |-----------|-------------|-----------|
 | **Documents** (`drucksache`) | Bills, reports, proposals | Policy analysis, text mining |
 | **Procedures** (`vorgang`) | Legislative processes | Tracking law development |
-| **Activities** (`aktivitaet`) | Parliamentary actions | Voting behavior analysis |
+| **Activities** (`aktivitaet`) | Speeches, questions, other actions of individual persons | Who speaks or asks about what |
 | **Persons** (`person`) | MPs and officials | Political network analysis |
 | **Plenary Protocols** (`plenarprotokoll`) | Session transcripts | Speech analysis, debate tracking |
 | **Procedure Positions** (`vorgangsposition`) | Steps in processes | Process flow analysis |
@@ -74,9 +77,10 @@ doc_with_text = bt.search_document(
 ### 2. Tracking Legislative Processes
 
 ```python
-# Find procedures by topic
+# Find procedures by topic. Descriptors are German keywords from the
+# Bundestag thesaurus; multiple descriptors are combined with AND.
 procedures = bt.search_procedure(
-    descriptor=["Climate", "Energy"],  # AND search
+    descriptor=["Klimaschutz", "Windenergieanlage"],
     limit=50
 )
 
@@ -84,10 +88,11 @@ procedures = bt.search_procedure(
 procedure_details = bt.get_procedure(btid=12345)
 ```
 
-### 3. Analyzing Parliamentary Speeches
+### 3. Full Text of Plenary Protocols
 
 ```python
-# Get plenary protocols with full text
+# Get plenary protocols with their full text as one string (all periods, BT and BR).
+# For individual speeches, see "Speech Analysis" below.
 protocols = bt.search_plenaryprotocol(
     date_start="2024-01-01",
     fulltext=True,
@@ -95,7 +100,108 @@ protocols = bt.search_plenaryprotocol(
 )
 ```
 
-### 4. Member Analysis
+### 4. Speech Analysis (Who Said What)
+
+Since the 18th legislative period (2013), the Bundestag publishes its plenary
+protocols as structured XML. The package downloads and parses these files into
+flat tables, so you can analyse speeches without writing any XML code.
+
+```python
+# All speeches of one plenary session (DIP ID of the 'plenarprotokoll')
+speeches = bt.get_speeches(5678, return_format="pandas")
+speeches[["speaker_name", "faction", "agenda_item", "word_count"]].head()
+
+# Speeches from several sessions, filtered by faction (case-insensitive substring)
+greens = bt.search_speeches(
+    date_start="2024-06-01",
+    date_end="2024-06-30",
+    faction="GRÜNE",
+    max_protocols=5,          # each protocol is a separate download
+    return_format="pandas",
+)
+
+# Words spoken per faction
+greens.groupby("faction")["word_count"].sum()
+```
+
+Three levels of detail are available via `level=`:
+
+| `level` | One row per | Typical use |
+|---------|-------------|-------------|
+| `"speech"` (default) | speech; `text` contains only the main speaker | text mining, speaking time, topics |
+| `"segment"` | passage of one speaker, incl. presiding officer (`speaker_role="chair"`) and interposed questions (`"other"`) | debate dynamics, interventions |
+| `"comment"` | part of an interjection recorded in the protocol | applause and heckling analysis |
+
+```python
+# Who heckles whom?
+comments = bt.get_speeches(5678, level="comment", return_format="pandas")
+heckles = comments[comments["kind"] == "Zuruf"]
+heckles.groupby(["actor_faction", "speaker_faction"]).size()
+
+# Applause, also when combined with other reactions ("Heiterkeit und Beifall ...")
+applause = comments[comments["text"].str.contains("Beifall")]
+```
+
+Already downloaded an XML file? Parse it directly:
+
+```python
+from bundestag_api import parse_protocol_xml
+
+protocol = parse_protocol_xml("20177.xml")
+frames = protocol.to_dataframes()   # {"speeches": ..., "segments": ..., "comments": ...}
+```
+
+Good to know:
+- Structured XML exists only for Bundestag protocols from 2013 onwards (18th legislative
+  period), not for the Bundesrat. `search_speeches` therefore filters on `institution="BT"`
+  by default and skips protocols without XML.
+- `speaker_id` is the ID of the Bundestag's member master data (MdB-Stammdaten), which
+  differs from the DIP `person_id`.
+- Speeches submitted in writing ("zu Protokoll gegebene Reden") are marked with `in_annex=True`.
+- Comments are classified by their leading keyword (`kind`: Beifall, Zuruf, Heiterkeit,
+  Lachen, Widerspruch, ...). The original wording is always kept in `text` and `comment_text`.
+
+### 5. Decisions and Votes
+
+Every step of a procedure (`vorgangsposition`) can contain decisions ("Beschlussfassung"):
+the Bundestag adopting a bill, the Bundesrat giving its consent, a motion being rejected.
+The package turns them into one flat row per decision.
+
+```python
+# All decisions on one legislative procedure (DIP ID of the 'vorgang')
+decisions = bt.get_decisions(300001, return_format="pandas")
+decisions[["date", "institution", "position", "decision", "decided_document_number", "voting_method"]]
+
+# All recorded votes ("namentliche Abstimmungen") in June 2024
+votes = bt.search_decisions(
+    date_start="2024-06-01",
+    date_end="2024-06-30",
+    institution="BT",
+    voting_method="Namentliche Abstimmung",
+    limit=500,                 # number of plenary procedure steps to scan
+    return_format="pandas",
+)
+```
+
+`search_decisions` only scans procedure steps linked to a plenary protocol, because that is
+where decisions are recorded. Pass `document_art=None` to scan all steps.
+
+Each row contains the procedure (`procedure_id`, `procedure_title`, `procedure_type`), the step
+(`position`, e.g. "2. Beratung", `institution`, `date`), the decision (`decision`, `decided_document_number`,
+`voting_method`, `recorded_vote`, `majority`, `result_remark`, `legal_basis`) and where it is recorded
+(`document_number`, `page`, `pdf_url`). For decisions taken in a plenary session, `protocol_id` links
+to the protocol, so you can fetch the debate: `bt.get_speeches(row["protocol_id"])`.
+
+⚠️ **Read decisions carefully.** `decision` refers to the document(s) in `decided_document_number`
+(several numbers are separated by commas, e.g. `"20/11561, 20/12149"` for a bill and the committee
+recommendation).
+"Annahme der Beschlussempfehlung" (adoption of the committee recommendation) can mean that the
+original motion was *rejected*, if the committee recommended rejection. Check that document before
+reporting an outcome. The API does not contain how individual members voted.
+
+Available voting methods: `bundestag_api.VOTING_METHODS`.
+
+### 6. Member Analysis
 
 ```python
 # Search for members of the Bundestag
@@ -128,30 +234,120 @@ All search functions support common filters:
 
 ```python
 documents = bt.search_document(
-    date_start="2024-01-01",      # Start date (YYYY-MM-DD)
-    date_end="2024-12-31",        # End date (YYYY-MM-DD)  
+    date_start="2024-01-01",      # Start date (YYYY-MM-DD string or datetime.date)
+    date_end="2024-12-31",        # End date (YYYY-MM-DD string or datetime.date)
     institution="BT",             # BT=Bundestag, BR=Bundesrat
     drucksache_type="Antrag",     # Specific 'Drucksache' types
-    title=["Climate", "Energy"],  # Keywords in title (OR search)
+    title=["Klima", "Energie"],   # Keywords in title (OR search, German terms)
     limit=100                     # Maximum results
 )
 ```
 
-### Handling Large Datasets
+Not every filter is available for every data type. If you pass a filter that the
+API does not support for a resource (e.g. `descriptor` for documents), the package
+raises a `ValueError` naming the resources where the filter can be used, instead
+of silently returning unfiltered data.
+
+### Finding the Right Filter Values
+
+Many filters expect exact German terms from the Bundestag's vocabulary. Fixed values
+are available as constants:
 
 ```python
-# Get all documents (automatically handles pagination)
-all_documents = bt.search_document(
-    date_start="2024-01-01",
-    limit=1000  # Will make multiple API calls as needed
-)
+from bundestag_api import vocabulary as voc
 
-# Process data in chunks for memory efficiency
-for i in range(0, len(all_documents), 100):
-    chunk = all_documents[i:i+100]
-    # Process your chunk here
-    process_documents(chunk)
+voc.INSTITUTIONS              # {"BT": "Bundestag", "BR": "Bundesrat", ...}
+voc.VOTING_METHODS            # ("Namentliche Abstimmung", "Hammelsprung", ...)
+voc.FEDERAL_STATES            # the 16 Länder
+voc.LEGISLATIVE_PERIODS       # {19: (date(2017, 10, 24), date(2021, 10, 25)), ...}
+voc.CURRENT_LEGISLATIVE_PERIOD
+
+# Which legislative period was it?
+bundestag_api.legislative_period_for("2019-05-01")    # 19
+bundestag_api.legislative_period_dates(19)            # ("2017-10-24", "2021-10-25")
 ```
+
+Other vocabularies (subject areas, document types, consultation states, ...) are open and
+change over time. `discover_values` counts which values actually occur in the data, with
+their exact spelling:
+
+```python
+bt.discover_values("vorgang", "sachgebiet", legislative_period=20)
+# -> list of {"value": <subject area>, "count": <number of procedures>}, most frequent first
+
+bt.discover_values("drucksache", "drucksachetyp", institution="BT", return_format="pandas")
+bt.discover_values("vorgang", "beratungsstand")
+bt.discover_values("drucksache", "urheber.titel")      # nested fields with dots
+```
+
+It samples the most recent 1000 records by default (`limit=`), so very rare values may be missing.
+
+### Handling Large Datasets
+
+**Count first.** `count` returns the number of matching records with a single request:
+
+```python
+bt.count("drucksache", legislative_period=20, drucksache_type="Kleine Anfrage")
+```
+
+**Get everything.** By default, searches return at most 100 records (`limit=100`).
+Use `limit=None` to fetch all matching records; pagination is handled automatically.
+If a result was cut off by `limit`, the package logs how many records matched in total.
+
+```python
+all_questions = bt.search_document(legislative_period=20, drucksache_type="Kleine Anfrage", limit=None)
+```
+
+**Stream instead of loading.** `iter_query` requests one page at a time while you iterate.
+Memory use stays constant, and you can stop whenever you like:
+
+```python
+import csv
+
+with open("documents.csv", "w", newline="", encoding="utf-8") as f:
+    writer = csv.writer(f)
+    for doc in bt.iter_query("drucksache", legislative_period=20):
+        writer.writerow([doc["id"], doc["datum"], doc["drucksachetyp"], doc["titel"]])
+```
+
+`iter_query` accepts the same filters as the search functions, plus `return_format="object"`
+and `limit`. Misspelled filter names raise an error instead of being ignored.
+
+### Keeping Your Data Up to Date (Incremental Sync)
+
+Every record carries an `aktualisiert` timestamp. Instead of downloading everything again,
+fetch only what changed:
+
+```python
+result = bt.fetch_updates("vorgang", since="2024-06-01T00:00:00", institution="BT")
+print(len(result), "changed procedures")
+result.records      # list of dicts (or objects / DataFrame via return_format)
+result.checkpoint   # latest 'aktualisiert' value, use it as `since` next time
+```
+
+For scheduled jobs (e.g. a daily cron job or GitHub Action), `sync` stores the checkpoint in a
+JSON file and returns only records that are new since the last run, without duplicates:
+
+```python
+result = bt.sync(
+    "drucksache",
+    state_file="dip_state.json",     # created on the first run
+    since="2024-06-01T00:00:00",     # only used on the first run
+    institution="BT",
+    drucksache_type="Gesetzentwurf",
+)
+for doc in result.records:
+    print(doc["dokumentnummer"], doc["titel"])
+```
+
+Good to know:
+- Times without a UTC offset are interpreted by the API as local time in Berlin. You can also
+  pass `"2024-06-01T00:00:00+02:00"` or a timezone-aware `datetime`.
+- "Updated" includes corrections to existing records, so a sync can return old documents
+  whose metadata changed.
+- Each combination of resource and filters has its own checkpoint in the state file. Several jobs
+  can share one state file, even when running at the same time (the file is locked while saving).
+- The state file is only written after a successful run, so a failed run is simply repeated.
 
 ### Parallel Processing
 
@@ -185,17 +381,24 @@ If you encounter `ConnectionError: Bot protection detected (Enodia challenge)`, 
 
 ## Data Structure Examples
 
+Abbreviated examples; see the [official API documentation](https://dip.bundestag.de/über-dip/hilfe/api) for all fields.
+
 ### Document Structure
 ```python
 {
-    "id": 264030,
-    "titel": "Climate Protection Act Amendment",
-    "drucksachetyp": "Gesetzentwurf",
-    "datum": "2024-01-15",
-    "urheber": ["Federal Government"],
+    "id": "68852",
+    "typ": "Dokument",
+    "dokumentart": "Drucksache",
+    "drucksachetyp": "Antrag",
+    "dokumentnummer": "19/1",
+    "wahlperiode": 19,
+    "herausgeber": "BT",
+    "datum": "2017-10-24",
+    "titel": "Weitergeltung von Geschäftsordnungsrecht",
+    "urheber": [{"bezeichnung": "CDU/CSU", "titel": "Fraktion der CDU/CSU"}],
     "fundstelle": {
-        "pdf_url": "https://...",
-        "dokumentnummer": "20/1234"
+        "dokumentnummer": "19/1",
+        "pdf_url": "https://dserver.bundestag.de/btd/19/000/1900001.pdf"
     }
 }
 ```
@@ -203,20 +406,27 @@ If you encounter `ConnectionError: Bot protection detected (Enodia challenge)`, 
 ### Person Structure
 ```python
 {
-    "id": 12345,
-    "vorname": "Angela",
-    "nachname": "Merkel", 
-    "titel": "Dr.",
+    "id": "1728",
+    "vorname": "Ursula",
+    "nachname": "Leyen",
+    "namenszusatz": "von der",
+    "titel": "Dr.  Ursula von der Leyen, Bundesmin., Bundesministerium der Verteidigung",
+    "wahlperiode": [17, 18, 19],
     "person_roles": [{
-        "funktion": "MdB",
-        "fraktion": "CDU/CSU"
+        "funktion": "LMin Soz u. Frauen",
+        "nachname": "Leyen",
+        "vorname": "Ursula"
     }]
 }
 ```
 
+Note that IDs are delivered as strings in the raw JSON. With `return_format="object"`,
+all IDs are converted to integers.
+
 ## API Authentication
 
-The package includes a public API key that's valid until May 31, 2026. For production use or higher rate limits, request your personal API key from [parlamentsdokumentation@bundestag.de](mailto:parlamentsdokumentation@bundestag.de).
+The package includes a public API key that's valid until May 31, 2027. The key is sent in the
+HTTP `Authorization` header, so it does not appear in URLs, logs or error messages. For production use or higher rate limits, request your personal API key from [parlamentsdokumentation@bundestag.de](mailto:parlamentsdokumentation@bundestag.de).
 
 ```python
 # Using personal API key
@@ -276,6 +486,23 @@ monthly_counts = df.groupby(df['datum'].dt.to_period('M')).size()
 - `search_plenaryprotocol(**filters)` - Find session protocols
 - `search_procedureposition(**filters)` - Find procedure steps
 
+### Speech Functions
+- `get_speeches(btid, level="speech", **options)` - Speeches of specific plenary protocols
+- `search_speeches(max_protocols=10, **filters)` - Speeches of protocols matching the filters
+- `parse_protocol(btid)` - Download and parse a protocol into speeches, segments and comments
+- `bundestag_api.parse_protocol_xml(path_or_xml)` - Parse a local XML protocol file
+
+### Decision Functions
+- `get_decisions(procedure_id, **options)` - Decisions of specific procedures
+- `search_decisions(limit=100, voting_method=None, **filters)` - Decisions in procedure steps matching the filters
+- `bundestag_api.flatten_decisions(positions)` - Turn procedure positions you already have into decision rows
+
+### Large Datasets and Updates
+- `count(resource, **filters)` - Number of matching records (one request)
+- `iter_query(resource, **filters)` - Iterate over results page by page
+- `fetch_updates(resource, since, **filters)` - Records created or updated since a point in time
+- `sync(resource, state_file, **filters)` - Like `fetch_updates`, but remembers the checkpoint between runs
+
 ### Get Functions (by ID)
 - `get_document(btid, **options)` - Get specific documents
 - `get_procedure(btid, **options)` - Get specific procedures
@@ -287,10 +514,12 @@ monthly_counts = df.groupby(df['datum'].dt.to_period('M')).size()
 ## Common Issues & Solutions
 
 **Memory issues with large datasets?**
-- Use smaller `limit` values and process in chunks
-- Use `return_format="pandas"` for better memory efficiency
+- Stream results with `bt.iter_query(...)` instead of loading everything at once
+- Check the size first with `bt.count(...)`
+- Filter by `legislative_period` or date range to reduce the result size
 
 **Getting empty results?**
+- Check the exact spelling of filter values with `bt.discover_values(...)`
 - Check date formats (YYYY-MM-DD)
 - Verify institution codes (BT, BR, BV, EK)
 - Start with broader searches, then add filters
@@ -302,6 +531,14 @@ monthly_counts = df.groupby(df['datum'].dt.to_period('M')).size()
 ## Contributing
 
 Contributions are welcome! Please check the [GitHub repository](https://github.com/jschibberges/Bundestag-API) for current issues and development guidelines.
+
+Run the unit tests with `pytest`. They use sample data and need no network access.
+Before a release, run the smoke test against the live API:
+
+```bash
+python scripts/live_check.py              # add --apikey YOUR_KEY or set BUNDESTAG_API_KEY
+python scripts/live_check.py --skip-periods   # faster
+```
 
 ## License
 

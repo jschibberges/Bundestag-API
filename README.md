@@ -137,11 +137,12 @@ decisions[["date", "institution", "position", "decision", "decided_document_numb
 ### What did a member of parliament do?
 
 ```python
-people = bt.search_person(person_name="Merz", legislative_period=21)
-for p in people:
-    print(p["id"], p["vorname"], p["nachname"], p.get("fraktion"))
+# Common names match several people: list them and pick the right one
+people = bt.search_person(person_name="Müller", legislative_period=21)
+for i, p in enumerate(people):
+    print(i, p["id"], p["vorname"], p["nachname"], p.get("fraktion"))
 
-person_id = int(people[0]["id"])
+person_id = int(people[0]["id"])   # use the index of the person you mean
 activities = bt.search_activity(personID=person_id, legislative_period=21,
                                 limit=None, return_format="pandas")
 activities["aktivitaetsart"].value_counts()   # speeches, questions, ...
@@ -522,8 +523,7 @@ legislative period or date.
 
 The data comes from DIP, the documentation and information system for parliamentary materials of
 the German Bundestag. Please check its [terms of use](https://dip.bundestag.de/%C3%BCber-dip/nutzungsbedingungen)
-and name the source when you publish results. This package is not an official product of the
-German Bundestag.
+and name the source when you publish results.
 
 ## Contributing
 
